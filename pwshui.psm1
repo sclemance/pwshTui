@@ -15,7 +15,10 @@ function Get-PaginatedSelection {
 
         [switch]$Wrap,
 
-        [switch]$NoColor
+        [switch]$NoColor,
+
+        [Parameter(Position = 4)]
+        [int]$InitialIndex = 0
     )
 
     $itemList = @($Items)
@@ -24,8 +27,12 @@ function Get-PaginatedSelection {
         return $null
     }
 
-    $pageIndex = 0
-    $selectedIndex = 0
+    # Ensure InitialIndex is within bounds
+    if ($InitialIndex -ge $itemList.Count) { $InitialIndex = $itemList.Count - 1 }
+    if ($InitialIndex -lt 0) { $InitialIndex = 0 }
+
+    $pageIndex = [int][Math]::Floor($InitialIndex / $PageSize)
+    $selectedIndex = [int]($InitialIndex % $PageSize)
     $pageCount = [Math]::Max(1, [Math]::Ceiling($itemList.Count / $PageSize))
 
     $pointer = "> "
@@ -46,14 +53,13 @@ function Get-PaginatedSelection {
     Write-Host "`e[?25l" -NoNewline
 
     try {
-        # Initial empty line to separate from previous output
-        Write-Host ""
+        # Avoid initial newline if we're already at the bottom to reduce scrolling issues
         $firstRender = $true
 
         while ($running) {
             # Calculate current page items
             $startIdx = $pageIndex * $PageSize
-            $currentPageItems = $itemList | Select-Object -Skip $startIdx -First $PageSize
+            $currentPageItems = @($itemList | Select-Object -Skip $startIdx -First $PageSize)
             
             # Ensure selected index is valid for current page (preserves row when possible)
             if ($selectedIndex -ge $currentPageItems.Count) {
@@ -62,20 +68,32 @@ function Get-PaginatedSelection {
 
             if (-not $firstRender) {
                 # ANSI to move cursor up before drawing
-                # Title (1) + Separator (1) + Items (PageSize) + Newline (1) + Footer1 (1) + Footer2 (1) = PageSize + 5
                 $linesToMoveUp = $PageSize + 5
                 Write-Host "`e[$($linesToMoveUp)A" -NoNewline
+            } else {
+                # Start with a clean line on first render
+                Write-Host ""
             }
             $firstRender = $false
 
             # Header
             Write-Host "$Title`e[K" -ForegroundColor Cyan
-            Write-Host ("-" * $Title.Length + "`e[K") -ForegroundColor DarkGray
+            Write-Host ("-" * [Math]::Min($Title.Length, [Console]::WindowWidth) + "`e[K") -ForegroundColor DarkGray
+
+            # Get window width for truncation
+            $winWidth = 80
+            try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
 
             # Items
             for ($i = 0; $i -lt $currentPageItems.Count; $i++) {
                 $item = $currentPageItems[$i]
-                $displayText = if ($DisplayProperty -and $item.$DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
+                $displayText = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
+                if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
+                
+                # Truncate to prevent wrapping which breaks cursor positioning
+                $maxLen = $winWidth - 5
+                if ($displayText.Length -gt $maxLen) { $displayText = $displayText.Substring(0, $maxLen - 3) + "..." }
+
                 $isRowSelected = ($i -eq $selectedIndex)
                 
                 if ($isRowSelected) {
@@ -493,7 +511,10 @@ function Invoke-NestedMenu {
         [array]$MenuTree,
 
         [Parameter(Position = 1)]
-        [string]$Title = "Main Menu"
+        [string]$Title = "Main Menu",
+
+        [Parameter(Position = 2)]
+        [array]$InitialPath
     )
 
     # Helper to recursively normalize items
@@ -533,6 +554,42 @@ function Invoke-NestedMenu {
     $history = [System.Collections.Generic.List[PSCustomObject]]::new()
     $history.Add([PSCustomObject]@{ Title = $Title; Items = $normalizedTree; SelectedIndex = 0 })
 
+    # Process InitialPath if provided
+    if ($null -ne $InitialPath -and $InitialPath.Count -gt 0) {
+        for ($s = 0; $s -lt $InitialPath.Count; $s++) {
+            $segment = $InitialPath[$s]
+            $currentLayer = $history[$history.Count - 1]
+            $items = $currentLayer.Items
+            $foundIdx = -1
+
+            if ($segment -is [int]) {
+                if ($segment -ge 0 -and $segment -lt $items.Count) {
+                    $foundIdx = $segment
+                }
+            } else {
+                for ($i = 0; $i -lt $items.Count; $i++) {
+                    if ($items[$i].Label -eq $segment -or $items[$i].Value -eq $segment) {
+                        $foundIdx = $i
+                        break
+                    }
+                }
+            }
+
+            if ($foundIdx -ne -1) {
+                $currentLayer.SelectedIndex = $foundIdx
+                $selected = $items[$foundIdx]
+                # Only drill down if there are more segments in the path and the item has children
+                if ($s -lt ($InitialPath.Count - 1) -and $null -ne $selected.Children -and $selected.Children.Count -gt 0) {
+                    $history.Add([PSCustomObject]@{ Title = $selected.Label; Items = $selected.Children; SelectedIndex = 0 })
+                } else {
+                    break 
+                }
+            } else {
+                break # Segment not found
+            }
+        }
+    }
+
     $running = $true
     $result = $null
     $numString = ""
@@ -568,8 +625,16 @@ function Invoke-NestedMenu {
 
             # Breadcrumbs
             $breadcrumb = ($history | ForEach-Object Title) -join " > "
-            Write-Host "`r$breadcrumb" -ForegroundColor Cyan
-            Write-Host ("-" * [Math]::Min($breadcrumb.Length, [Console]::WindowWidth)) -ForegroundColor DarkGray
+            
+            # Get window width for truncation
+            $winWidth = 80
+            try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
+
+            # Truncate breadcrumb if too long
+            if ($breadcrumb.Length -gt ($winWidth - 1)) { $breadcrumb = "..." + $breadcrumb.Substring($breadcrumb.Length - ($winWidth - 4)) }
+            
+            Write-Host "`r$breadcrumb`e[K" -ForegroundColor Cyan
+            Write-Host ("-" * [Math]::Min($breadcrumb.Length, $winWidth) + "`e[K") -ForegroundColor DarkGray
 
             # Render Items
             $pointer = "> "
@@ -583,17 +648,21 @@ function Invoke-NestedMenu {
                 $suffix = if ($null -ne $item.Children -and $item.Children.Count -gt 0) { " ►" } else { "" }
                 $displayText = "[$displayNum] $($item.Label)$suffix"
 
+                # Truncate item text
+                $maxLen = $winWidth - 5
+                if ($displayText.Length -gt $maxLen) { $displayText = $displayText.Substring(0, $maxLen - 3) + "..." }
+
                 if ($isRowSelected) {
                     Write-Host "$pointer" -NoNewline -ForegroundColor Cyan
-                    Write-Host "$displayText" -BackgroundColor Cyan -ForegroundColor Black
+                    Write-Host "$displayText`e[K" -BackgroundColor Cyan -ForegroundColor Black
                 } else {
-                    Write-Host "$emptyPointer$displayText"
+                    Write-Host "$emptyPointer$displayText`e[K"
                 }
             }
             
             # Footer
-            Write-Host ""
-            Write-Host "↑↓ or 1-$($currentItems.Count): Move   →: Expand   ←: Back   Enter: Select   Esc: Exit" -ForegroundColor DarkGray
+            Write-Host "`e[K"
+            Write-Host "↑↓ or 1-$($currentItems.Count): Move   →: Expand   ←: Back   Enter: Select   Esc: Exit`e[K" -ForegroundColor DarkGray
 
             # Handle Input
             $key = [Console]::ReadKey($true)

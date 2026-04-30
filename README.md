@@ -15,6 +15,7 @@ A powerful interactive selector for arrays or complex objects.
 - Support for wrapping between pages and within pages (`-Wrap`).
 - Object-aware: use `-DisplayProperty` to specify which property of an object to display in the menu.
 - Clean display logic that prevents artifacts on the screen when navigating between pages of varying lengths.
+- **Automatic Truncation:** Long lines are automatically truncated to fit the terminal width, preventing layout breakage and cursor sync issues.
 
 **Parameters:**
 - `-Items`: (Required) The array of items to select from.
@@ -23,6 +24,7 @@ A powerful interactive selector for arrays or complex objects.
 - `-DisplayProperty`: If passing objects, the name of the property to display in the list.
 - `-Wrap`: (Switch) Enables wrapping from the bottom to the top of a page, and from the last page to the first page.
 - `-NoColor`: (Switch) Disables ANSI color highlighting, relying entirely on the `> ` pointer.
+- `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current page.
@@ -35,8 +37,9 @@ A powerful interactive selector for arrays or complex objects.
 Import-Module ./pwshui.psd1
 
 $processes = Get-Process | Sort-Object Name
-$selected = Get-PaginatedSelection -Items $processes -PageSize 15 -Title "Select a Process" -DisplayProperty "ProcessName" -Wrap
-
+# Start on the 25th process in the list
+$selected = Get-PaginatedSelection -Items $processes -PageSize 15 -InitialIndex 24 -Title "Select a Process" -DisplayProperty "ProcessName" -Wrap
+```
 if ($selected) {
     Write-Host "You chose: $($selected.ProcessName) (PID: $($selected.Id))"
 }
@@ -130,10 +133,12 @@ A hierarchical menu system designed for non-paginated, deep-tree navigation.
 - Deep linking: Dynamically displays breadcrumbs (e.g. `Main Menu > System > Power`) as you drill down.
 - Provides numeric shortcuts. You can rapidly jump to an option by typing its list number (e.g., `1`, `12`).
 - Gracefully handles menus of varying heights by clearing previous artifacts.
+- **Automatic Truncation:** Long lines and deep breadcrumbs are automatically truncated to fit the terminal width, preventing layout breakage.
 
 **Parameters:**
 - `-MenuTree`: (Required) The structural array of menu options.
 - `-Title`: The root text displayed in the breadcrumb header (Default: `"Main Menu"`).
+- `-InitialPath`: An array of indices (`[int]`) or strings (`[string]`) representing the path to pre-navigate. If the last segment is a leaf, it will be highlighted; if it is a sub-menu, it will be highlighted but not entered unless there is a subsequent segment in the path.
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current menu tier.
@@ -155,7 +160,8 @@ $menuData = @(
     @{ Label = "Exit"; Value = "exit" }
 )
 
-$selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal"
+# Launch directly into the 'System' submenu and highlight 'Storage'
+$selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System", "Storage")
 ```
 
 ## Terminal Safety & UI Polish

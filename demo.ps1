@@ -59,3 +59,16 @@ if ($cidr) { Write-Host "Captured Value: $cidr`n" -ForegroundColor Green }
 
 $email = Read-ValidatedInput -Prompt "Enter Email Address:" -Pattern '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 if ($email) { Write-Host "Captured Value: $email`n" -ForegroundColor Green }
+
+# --- Demo 5: Initial Selection & Entry Points ---
+Write-Host "--- Initial Selection & Entry Points Demo ---" -ForegroundColor Cyan
+
+# Example 1: Nested Menu starting deep (Power Options > Power Saver)
+Write-Host "Launching Nested Menu directly into 'Power Saver'..." -ForegroundColor Gray
+$deepSelection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System Configuration", "Power Options", 1)
+if ($deepSelection) { Write-Host "Captured Deep Action: $deepSelection`n" -ForegroundColor Green }
+
+# Example 2: Paginated List starting on Item 25 (Page 3)
+Write-Host "Launching Paginated Selection starting at Item 25..." -ForegroundColor Gray
+$pagedSelection = Get-PaginatedSelection -Items $items -PageSize 10 -InitialIndex 24 -Title "Jumped to Item 25" -DisplayProperty "Name"
+if ($pagedSelection) { Write-Host "Captured Jumped Item: $($pagedSelection.Name)`n" -ForegroundColor Green }
