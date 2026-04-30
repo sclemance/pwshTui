@@ -72,3 +72,14 @@ if ($deepSelection) { Write-Host "Captured Deep Action: $deepSelection`n" -Foreg
 Write-Host "Launching Paginated Selection starting at Item 25..." -ForegroundColor Gray
 $pagedSelection = Get-PaginatedSelection -Items $items -PageSize 10 -InitialIndex 24 -Title "Jumped to Item 25" -DisplayProperty "Name"
 if ($pagedSelection) { Write-Host "Captured Jumped Item: $($pagedSelection.Name)`n" -ForegroundColor Green }
+
+# --- Demo 6: Write-UIBox Standalone ---
+Write-Host "--- Write-UIBox Standalone Demo ---" -ForegroundColor Cyan
+Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB", "Disk: 80% Full") -Footer "Press any key to continue..." -Border
+
+# --- Demo 7: Borders and Positioning ---
+Write-Host "`n--- Borders and Positioning Demo ---" -ForegroundColor Cyan
+Write-Host "Drawing a menu with borders at X=5, Y=15 using AltScreen..." -ForegroundColor Gray
+
+$borderedSelection = Invoke-NestedMenu -MenuTree $menuData -Title "Bordered Menu" -Border -MinWidth 40 -X 5 -Y 15 -AltScreen
+if ($borderedSelection) { Write-Host "Captured Action: $borderedSelection`n" -ForegroundColor Green }

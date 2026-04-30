@@ -1,3 +1,101 @@
+function Write-UIBox {
+    [CmdletBinding()]
+    param(
+        [string[]]$Header,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Body,
+        [string[]]$Footer,
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
+    )
+
+    # ANSI Strip regex to calculate true visible length
+    $ansiRegex = "\e\[[0-9;]*[a-zA-Z]"
+    
+    function Get-VisibleLength ([string]$s) {
+        if ([string]::IsNullOrEmpty($s)) { return 0 }
+        return ($s -replace $ansiRegex, "").Length
+    }
+
+    $allLines = @()
+    if ($Header) { $allLines += $Header }
+    $allLines += $Body
+    if ($Footer) { $allLines += $Footer }
+
+    # Calculate required width
+    $maxContentLen = $MinWidth
+    foreach ($line in $allLines) {
+        $len = Get-VisibleLength $line
+        if ($len -gt $maxContentLen) { $maxContentLen = $len }
+    }
+
+    $winWidth = 80
+    try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
+    
+    $limit = ($MaxWidth -gt 0) ? [Math]::Min($MaxWidth, $winWidth) : $winWidth
+    $borderOffset = $Border ? 4 : 0
+    $innerBoxWidth = [Math]::Min($maxContentLen, $limit - $borderOffset)
+    if ($innerBoxWidth -lt 0) { $innerBoxWidth = 0 }
+    
+    $outerBoxWidth = $innerBoxWidth + $borderOffset
+
+    # Build the final frame lines in an array first to avoid scope/logic errors
+    $frame = [System.Collections.Generic.List[string]]::new()
+    $horiz = "─" * ($innerBoxWidth + 2)
+
+    if ($Border) { $frame.Add("┌$horiz┐") }
+
+    $addSectionLines = {
+        param([string[]]$sectionLines)
+        foreach ($line in $sectionLines) {
+            $visibleLen = Get-VisibleLength $line
+            $displayText = $line
+            if ($visibleLen -gt $innerBoxWidth) {
+                if ($line -match $ansiRegex) { $displayText = $line } 
+                else { $displayText = $line.Substring(0, $innerBoxWidth - 3) + "..." }
+                $visibleLen = $innerBoxWidth
+            }
+            $padding = " " * ($innerBoxWidth - $visibleLen)
+            if ($Border) { $frame.Add("│ $displayText$padding │") }
+            else { $frame.Add("$displayText$padding") }
+        }
+    }
+
+    if ($Header) {
+        & $addSectionLines $Header
+        if ($Border -and ($Body -or $Footer)) { $frame.Add("├$horiz┤") }
+    }
+
+    & $addSectionLines $Body
+
+    if ($Footer) {
+        if ($Border) { $frame.Add("├$horiz┤") }
+        & $addSectionLines $Footer
+    }
+
+    if ($Border) { $frame.Add("└$horiz┘") }
+
+    # Render the frame
+    $currentY = $Y
+    foreach ($line in $frame) {
+        if ($X -ge 0) {
+            if ($currentY -ge 0) {
+                Write-Host "`e[$($currentY);$($X)H" -NoNewline
+                $currentY++
+            } else {
+                Write-Host "`e[$($X)G" -NoNewline
+            }
+        }
+        Write-Host "$line`e[K"
+    }
+
+    return $frame.Count
+}
+
 function Get-PaginatedSelection {
     [CmdletBinding()]
     param(
@@ -18,7 +116,14 @@ function Get-PaginatedSelection {
         [switch]$NoColor,
 
         [Parameter(Position = 4)]
-        [int]$InitialIndex = 0
+        [int]$InitialIndex = 0,
+
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
     )
 
     $itemList = @($Items)
@@ -51,81 +156,73 @@ function Get-PaginatedSelection {
 
     # Hide cursor using ANSI
     Write-Host "`e[?25l" -NoNewline
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
-        # Avoid initial newline if we're already at the bottom to reduce scrolling issues
         $firstRender = $true
+        $lastHeight = 0
 
         while ($running) {
             # Calculate current page items
             $startIdx = $pageIndex * $PageSize
             $currentPageItems = @($itemList | Select-Object -Skip $startIdx -First $PageSize)
             
-            # Ensure selected index is valid for current page (preserves row when possible)
+            # Ensure selected index is valid for current page
             if ($selectedIndex -ge $currentPageItems.Count) {
                 $selectedIndex = [Math]::Max(0, $currentPageItems.Count - 1)
             }
 
-            if (-not $firstRender) {
-                # ANSI to move cursor up before drawing
-                $linesToMoveUp = $PageSize + 5
-                Write-Host "`e[$($linesToMoveUp)A" -NoNewline
-            } else {
-                # Start with a clean line on first render
-                Write-Host ""
+            if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+                # ANSI to move cursor up before drawing if not using absolute positioning
+                Write-Host "`e[$($lastHeight)A" -NoNewline
+            } elseif ($firstRender -and ($X -lt 0 -and $Y -lt 0)) {
+                Write-Host "" # Initial newline for relative positioning
             }
             $firstRender = $false
 
-            # Header
-            Write-Host "$Title`e[K" -ForegroundColor Cyan
-            Write-Host ("-" * [Math]::Min($Title.Length, [Console]::WindowWidth) + "`e[K") -ForegroundColor DarkGray
-
-            # Get window width for truncation
-            $winWidth = 80
-            try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
-
-            # Items
+            # Build Sections for UIBox
+            $header = @($Title, ("-" * $Title.Length))
+            
+            $body = @()
             for ($i = 0; $i -lt $currentPageItems.Count; $i++) {
                 $item = $currentPageItems[$i]
-                $displayText = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
+                $displayText = ""
+                if ($DisplayProperty) { $displayText = $item.$DisplayProperty }
+                else { $displayText = $item.ToString() }
                 if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
                 
-                # Truncate to prevent wrapping which breaks cursor positioning
-                $maxLen = $winWidth - 5
-                if ($displayText.Length -gt $maxLen) { $displayText = $displayText.Substring(0, $maxLen - 3) + "..." }
-
                 $isRowSelected = ($i -eq $selectedIndex)
-                
                 if ($isRowSelected) {
                     if ($NoColor) {
-                        Write-Host "$pointer$displayText`e[K"
+                        $body += "$pointer$displayText"
                     } else {
-                        Write-Host "$pointer" -NoNewline -ForegroundColor Cyan
-                        Write-Host "$displayText`e[K" -BackgroundColor Cyan -ForegroundColor Black
+                        $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
                     }
                 } else {
-                    Write-Host "$emptyPointer$displayText`e[K"
+                    $body += "$emptyPointer$displayText"
                 }
             }
 
-            # Pad empty rows to keep footer stationary and overwrite artifacts
-            $padding = $PageSize - $currentPageItems.Count
-            $clearString = " " * [Console]::WindowWidth
-            for ($i = 0; $i -lt $padding; $i++) {
-                # Try to overwrite the full line if WindowWidth is available, else at least clear some space
-                if ([Console]::WindowWidth -gt 0) {
-                    Write-Host "`e[K" -NoNewline # ANSI Clear line from cursor right
-                }
-                Write-Host ""
-            }
-
-            # Footer
             $pageNumDisplay = "($($pageIndex + 1)/$pageCount)"
             $rangeDisplay = "($($startIdx + 1)-$([Math]::Min($startIdx + $PageSize, $itemList.Count)) of $($itemList.Count))"
-            
-            Write-Host "`e[K" # Newline before footer, clear any artifacts
-            Write-Host "← Prev page $pageNumDisplay   → Next page $pageNumDisplay`e[K" -ForegroundColor DarkGray
-            Write-Host "↑↓ Move $rangeDisplay   Enter Select    Esc Cancel`e[K" -ForegroundColor DarkGray
+            $footer = @(
+                "← Prev page $pageNumDisplay   → Next page $pageNumDisplay",
+                "↑↓ Move $rangeDisplay   Enter Select    Esc Cancel"
+            )
+
+            # Draw using UIBox
+            $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
+                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y
+
+            # If the box shrunk, clear the leftover lines below it
+            if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
+                $diff = $lastHeight - $newHeight
+                for ($h = 0; $h -lt $diff; $h++) {
+                    Write-Host "`e[K" # Clear line and move down
+                }
+                Write-Host "`e[$($diff)A" -NoNewline # Move back up to bottom of new box
+            }
+            $lastHeight = $newHeight
 
             # Key Input
             $key = [Console]::ReadKey($true)
@@ -170,10 +267,15 @@ function Get-PaginatedSelection {
             }
         }
     } finally {
+        # Restore cursor to its original state
+        if ($originalCursorVisible) {
+            Write-Host "`e[?25h" -NoNewline
+        }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
+
         # ANSI to move cursor up before clearing on exit if we rendered at least once
-        if (-not $firstRender) {
-            $linesToMoveUp = $PageSize + 5
-            Write-Host "`e[$($linesToMoveUp)A" -NoNewline
+        if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+            Write-Host "`e[$($lastHeight)A" -NoNewline
         }
 
         # Clear the menu area
@@ -183,6 +285,7 @@ function Get-PaginatedSelection {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
 
         # If cancelled or aborted, ensure the next prompt starts on a clean line
         if ($null -eq $result) {
@@ -255,6 +358,7 @@ function Read-MaskedInput {
     }
     
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
         while ($running) {
@@ -273,11 +377,9 @@ function Read-MaskedInput {
             for ($i = 0; $i -lt $Mask.Length; $i++) {
                 $m = $Mask[$i]
                 if ($m -in '#', 'a', 'X', 'x', '*') {
-                    if ($slotIdx -lt $rawInput.Count) {
-                        $charToPrint = $rawInput[$slotIdx]
-                    } else {
-                        $charToPrint = $Placeholder
-                    }
+                    $charToPrint = ""
+                    if ($slotIdx -lt $rawInput.Count) { $charToPrint = $rawInput[$slotIdx] }
+                    else { $charToPrint = $Placeholder }
                     $displayStr += $charToPrint
                     $slotIdx++
                 } else {
@@ -362,6 +464,7 @@ function Read-MaskedInput {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
         
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
@@ -419,6 +522,7 @@ function Read-ValidatedInput {
     } catch {}
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
         while ($running) {
@@ -431,11 +535,13 @@ function Read-ValidatedInput {
             
             # Draw Input String
             $useColor = ($currentStr.Length -gt 0)
-            $color = if ($isValid) { "Green" } else { "Red" }
+            $color = "Red"
+            if ($isValid) { $color = "Green" }
             
             for ($i = 0; $i -le $currentStr.Length; $i++) {
                 if ($i -eq $cursor) {
-                    $charToDraw = if ($i -lt $currentStr.Length) { $currentStr[$i] } else { " " }
+                    $charToDraw = " "
+                    if ($i -lt $currentStr.Length) { $charToDraw = $currentStr[$i] }
                     Write-Host $charToDraw -NoNewline -BackgroundColor Cyan -ForegroundColor Black
                 } else {
                     if ($i -lt $currentStr.Length) {
@@ -492,6 +598,7 @@ function Read-ValidatedInput {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
 
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
@@ -514,7 +621,14 @@ function Invoke-NestedMenu {
         [string]$Title = "Main Menu",
 
         [Parameter(Position = 2)]
-        [array]$InitialPath
+        [array]$InitialPath,
+
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
     )
 
     # Helper to recursively normalize items
@@ -603,42 +717,31 @@ function Invoke-NestedMenu {
     } catch {}
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
-        Write-Host "" # Initial newline
+        if ($X -lt 0 -and $Y -lt 0) { Write-Host "" } # Initial newline
         $firstRender = $true
+        $lastHeight = 0
         
         while ($running) {
             $currentMenu = $history[$history.Count - 1]
             $currentItems = $currentMenu.Items
             $selectedIndex = $currentMenu.SelectedIndex
 
-            if (-not $firstRender) {
-                # Move cursor back up to the top of the menu
-                $linesToMoveUp = $currentItems.Count + 4
-                Write-Host "`e[$($linesToMoveUp)A" -NoNewline
+            if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+                Write-Host "`e[$($lastHeight)A" -NoNewline
             }
             $firstRender = $false
 
-            # Clear any artifacts from previous larger menus
-            Write-Host "`e[J" -NoNewline 
-
-            # Breadcrumbs
+            # Header
             $breadcrumb = ($history | ForEach-Object Title) -join " > "
-            
-            # Get window width for truncation
-            $winWidth = 80
-            try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
+            $header = @($breadcrumb, ("-" * $breadcrumb.Length))
 
-            # Truncate breadcrumb if too long
-            if ($breadcrumb.Length -gt ($winWidth - 1)) { $breadcrumb = "..." + $breadcrumb.Substring($breadcrumb.Length - ($winWidth - 4)) }
-            
-            Write-Host "`r$breadcrumb`e[K" -ForegroundColor Cyan
-            Write-Host ("-" * [Math]::Min($breadcrumb.Length, $winWidth) + "`e[K") -ForegroundColor DarkGray
-
-            # Render Items
+            # Body
             $pointer = "> "
             $emptyPointer = "  "
+            $body = @()
             
             for ($i = 0; $i -lt $currentItems.Count; $i++) {
                 $item = $currentItems[$i]
@@ -648,21 +751,29 @@ function Invoke-NestedMenu {
                 $suffix = if ($null -ne $item.Children -and $item.Children.Count -gt 0) { " ►" } else { "" }
                 $displayText = "[$displayNum] $($item.Label)$suffix"
 
-                # Truncate item text
-                $maxLen = $winWidth - 5
-                if ($displayText.Length -gt $maxLen) { $displayText = $displayText.Substring(0, $maxLen - 3) + "..." }
-
                 if ($isRowSelected) {
-                    Write-Host "$pointer" -NoNewline -ForegroundColor Cyan
-                    Write-Host "$displayText`e[K" -BackgroundColor Cyan -ForegroundColor Black
+                    $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
                 } else {
-                    Write-Host "$emptyPointer$displayText`e[K"
+                    $body += "$emptyPointer$displayText"
                 }
             }
             
             # Footer
-            Write-Host "`e[K"
-            Write-Host "↑↓ or 1-$($currentItems.Count): Move   →: Expand   ←: Back   Enter: Select   Esc: Exit`e[K" -ForegroundColor DarkGray
+            $footer = @("↑↓ or 1-$($currentItems.Count): Move   →: Expand   ←: Back   Enter: Select   Esc: Exit")
+
+            # Draw using UIBox
+            $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
+                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y
+
+            # If the box shrunk, clear the leftover lines below it
+            if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
+                $diff = $lastHeight - $newHeight
+                for ($h = 0; $h -lt $diff; $h++) {
+                    Write-Host "`e[K" # Clear line and move down
+                }
+                Write-Host "`e[$($diff)A" -NoNewline # Move back up to bottom of new box
+            }
+            $lastHeight = $newHeight
 
             # Handle Input
             $key = [Console]::ReadKey($true)
@@ -699,13 +810,13 @@ function Invoke-NestedMenu {
                 } elseif ($key.Key -eq 'LeftArrow') {
                     if ($history.Count -gt 1) {
                         $history.RemoveAt($history.Count - 1)
-                        Write-Host "`e[$($currentItems.Count + 4)A`e[J" -NoNewline
+                        if ($X -lt 0 -and $Y -lt 0) { Write-Host "`e[$($lastHeight)A`e[J" -NoNewline }
                         $firstRender = $true
                     }
                 } elseif ($key.Key -eq 'Escape') {
                     if ($history.Count -gt 1) {
                         $history.RemoveAt($history.Count - 1)
-                        Write-Host "`e[$($currentItems.Count + 4)A`e[J" -NoNewline
+                        if ($X -lt 0 -and $Y -lt 0) { Write-Host "`e[$($lastHeight)A`e[J" -NoNewline }
                         $firstRender = $true
                     } else {
                         $running = $false
@@ -715,14 +826,14 @@ function Invoke-NestedMenu {
                     $selectedItem = $currentItems[$selectedIndex]
                     if ($null -ne $selectedItem.Children -and $selectedItem.Children.Count -gt 0) {
                         $history.Add([PSCustomObject]@{ Title = $selectedItem.Label; Items = $selectedItem.Children; SelectedIndex = 0 })
-                        Write-Host "`e[$($currentItems.Count + 4)A`e[J" -NoNewline
+                        if ($X -lt 0 -and $Y -lt 0) { Write-Host "`e[$($lastHeight)A`e[J" -NoNewline }
                         $firstRender = $true
                     }
                 } elseif ($key.Key -eq 'Enter') {
                     $selectedItem = $currentItems[$selectedIndex]
                     if ($null -ne $selectedItem.Children -and $selectedItem.Children.Count -gt 0) {
                         $history.Add([PSCustomObject]@{ Title = $selectedItem.Label; Items = $selectedItem.Children; SelectedIndex = 0 })
-                        Write-Host "`e[$($currentItems.Count + 4)A`e[J" -NoNewline
+                        if ($X -lt 0 -and $Y -lt 0) { Write-Host "`e[$($lastHeight)A`e[J" -NoNewline }
                         $firstRender = $true
                     } else {
                         $result = $selectedItem.Value
@@ -733,9 +844,8 @@ function Invoke-NestedMenu {
         }
     } finally {
         # Move cursor back up before clearing on exit if we rendered at least once
-        if (-not $firstRender) {
-            $linesToMoveUp = $currentItems.Count + 4
-            Write-Host "`e[$($linesToMoveUp)A" -NoNewline
+        if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+            Write-Host "`e[$($lastHeight)A" -NoNewline
         }
 
         # Clear the entire menu area from the screen on exit
@@ -745,6 +855,7 @@ function Invoke-NestedMenu {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
 
         # Clean line on abort
         if ($null -eq $result) {
@@ -755,4 +866,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Invoke-NestedMenu
+Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Invoke-NestedMenu

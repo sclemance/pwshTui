@@ -5,9 +5,9 @@
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
-    Description          = 'A portable, flexible suite of PowerShell 7+ functions for clean console UX.'
-    PowerShellVersion    = '7.0'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-ValidatedInput', 'Invoke-NestedMenu')
+    Description          = 'A portable, flexible suite of PowerShell 7.4+ functions for clean console UX.'
+    PowerShellVersion    = '7.4'
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-ValidatedInput', 'Invoke-NestedMenu', 'Write-UIBox')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()

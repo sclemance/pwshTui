@@ -1,6 +1,6 @@
 # pwshui
 
-A portable, flexible suite of PowerShell 7+ functions designed to provide a clean and consistent console user experience across Linux, Windows, and macOS. 
+A portable, flexible suite of PowerShell 7.4+ functions designed to provide a clean and consistent console user experience across Linux, Windows, and macOS. 
 
 This library focuses on fast, flicker-free rendering using ANSI escape sequences and provides robust fallbacks for non-color terminals.
 
@@ -39,7 +39,6 @@ Import-Module ./pwshui.psd1
 $processes = Get-Process | Sort-Object Name
 # Start on the 25th process in the list
 $selected = Get-PaginatedSelection -Items $processes -PageSize 15 -InitialIndex 24 -Title "Select a Process" -DisplayProperty "ProcessName" -Wrap
-```
 if ($selected) {
     Write-Host "You chose: $($selected.ProcessName) (PID: $($selected.Id))"
 }
@@ -150,7 +149,7 @@ A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psd1
+Import-Module ./pwshui.psm1
 
 $menuData = @(
     @{ Label = "System"; Children = @(
@@ -163,6 +162,40 @@ $menuData = @(
 # Launch directly into the 'System' submenu and highlight 'Storage'
 $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System", "Storage")
 ```
+
+---
+
+### 5. `Write-UIBox`
+The underlying layout engine used by the interactive functions, also available for standalone use.
+
+**Features:**
+- Automatic sizing based on content.
+- Support for optional Header and Footer sections with horizontal separators.
+- ANSI-aware width calculation (correctly handles colors/formatting).
+- Absolute positioning (X, Y coordinates).
+- Single-line Unicode box borders.
+
+**Parameters:**
+- `-Header`: `[string[]]` lines for the top section.
+- `-Body`: `[string[]]` lines for the main content.
+- `-Footer`: `[string[]]` lines for the bottom section.
+- `-Border`: (Switch) Enables box-drawing borders.
+- `-MinWidth` / `-MaxWidth`: Constrains the width of the box.
+- `-X` / `-Y`: Absolute text coordinates for the top-left corner.
+
+**Example:**
+```powershell
+Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
+```
+
+## Global Layout Parameters
+
+All interactive functions (`Get-PaginatedSelection`, `Invoke-NestedMenu`) now support the following layout parameters:
+
+- `-Border`: Wraps the component in a box.
+- `-MinWidth`: Ensures a minimum box width.
+- `-MaxWidth`: Caps the box width (defaults to terminal width).
+- `-X` / `-Y`: Renders the component at absolute coordinates. If omitted, renders inline at the current cursor position.
 
 ## Terminal Safety & UI Polish
 
