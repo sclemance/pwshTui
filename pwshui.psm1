@@ -93,6 +93,12 @@ function Measure-FuzzyMatch {
         # Zero score if not all characters matched in order
         if ($sIdx -lt $sNorm.Length) {
             $subseqScore = 0
+        } elseif ($subseqScore -gt 0) {
+            # Normalize to 0-700 range: max score = 30 + 10*(n-1) + 5*(n-1)*n/2
+            # (perfect consecutive match starting at position 0 with word-boundary bonus)
+            $n = $sNorm.Length
+            $maxSubseqScore = 30 + 10 * ($n - 1) + [int](5 * ($n - 1) * $n / 2)
+            $subseqScore = [int](($subseqScore / $maxSubseqScore) * 700)
         }
     }
 
@@ -128,7 +134,9 @@ function Measure-FuzzyMatch {
 
     if ($Algorithm -eq 'Subsequence') { return $subseqScore }
     if ($Algorithm -eq 'Levenshtein') { return $levScore }
-    
+
+    # Future: replace Math.Max with a weighted blend (e.g. 60% subseq / 40% Jaro-Winkler)
+    # Future: replace Levenshtein with Jaro-Winkler for better short-string and transposition handling
     return [Math]::Max($subseqScore, $levScore)
 }
 
