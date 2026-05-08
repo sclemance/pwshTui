@@ -16,34 +16,38 @@ function Measure-FuzzyMatch {
         return 0
     }
 
+    # Normalize both strings: remove punctuation, collapse whitespace, lowercase
+    $sNorm = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim().ToLowerInvariant()
+    $tNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim().ToLowerInvariant()
+
+    if ([string]::IsNullOrWhiteSpace($sNorm)) { return 0 }
+
     # --- Legacy Fallback ---
     if ($Algorithm -eq 'Legacy') {
-        $inputNorm  = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
-        $targetNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
-        if ($targetNorm -eq $inputNorm) { return 1000 }
+        if ($tNorm -eq $sNorm) { return 1000 }
 
-        $inputWords = $inputNorm -split ' ' | Where-Object { $_.Length -gt 2 }
+        $inputWords = $sNorm -split ' ' | Where-Object { $_.Length -gt 2 }
         $score = 0
         $matchedWords = 0
 
         if ($inputWords.Count -gt 0) {
             foreach ($word in $inputWords) {
                 $wordMatched = $false
-                if ($targetNorm -match [regex]::Escape($word)) { $wordMatched = $true }
-                elseif ($word -match 's$') { if ($targetNorm -match [regex]::Escape($word.TrimEnd('s'))) { $wordMatched = $true } }
-                else { if ($targetNorm -match [regex]::Escape($word + 's')) { $wordMatched = $true } }
+                if ($tNorm -match [regex]::Escape($word)) { $wordMatched = $true }
+                elseif ($word -match 's$') { if ($tNorm -match [regex]::Escape($word.TrimEnd('s'))) { $wordMatched = $true } }
+                else { if ($tNorm -match [regex]::Escape($word + 's')) { $wordMatched = $true } }
 
-                if (-not $wordMatched -and $word -match 'ies$') { if ($targetNorm -match [regex]::Escape(($word -replace 'ies$', 'y'))) { $wordMatched = $true } }
-                elseif (-not $wordMatched -and $word -match 'y$') { if ($targetNorm -match [regex]::Escape(($word -replace 'y$', 'ies'))) { $wordMatched = $true } }
+                if (-not $wordMatched -and $word -match 'ies$') { if ($tNorm -match [regex]::Escape(($word -replace 'ies$', 'y'))) { $wordMatched = $true } }
+                elseif (-not $wordMatched -and $word -match 'y$') { if ($tNorm -match [regex]::Escape(($word -replace 'y$', 'ies'))) { $wordMatched = $true } }
 
                 if ($wordMatched) { $score += 10; $matchedWords++ }
             }
         } else {
-            if ($targetNorm -match [regex]::Escape($inputNorm)) { $score += 10 }
+            if ($tNorm -match [regex]::Escape($sNorm)) { $score += 10 }
         }
 
-        $targetContainsInput  = $targetNorm  -match [regex]::Escape($inputNorm)
-        $inputContainsTarget  = $inputNorm -match [regex]::Escape($targetNorm)
+        $targetContainsInput  = $tNorm -match [regex]::Escape($sNorm)
+        $inputContainsTarget  = $sNorm -match [regex]::Escape($tNorm)
 
         if ($targetContainsInput -or $inputContainsTarget) { $score += 50 }
 
@@ -54,12 +58,9 @@ function Measure-FuzzyMatch {
     }
 
     # --- Fast Paths (Common for Auto, Subsequence, Levenshtein) ---
-    $sLower = $SearchTerm.ToLowerInvariant()
-    $tLower = $TargetText.ToLowerInvariant()
-
-    if ($tLower -eq $sLower) { return 1000 }
-    if ($tLower.StartsWith($sLower)) { return 900 }
-    if ($tLower.Contains($sLower)) { return 800 }
+    if ($tNorm -eq $sNorm) { return 1000 }
+    if ($tNorm.StartsWith($sNorm)) { return 900 }
+    if ($tNorm.Contains($sNorm)) { return 800 }
 
     $subseqScore = 0
     $levScore = 0
@@ -70,15 +71,15 @@ function Measure-FuzzyMatch {
         $tIdx = 0
         $consecutive = 0
         
-        while ($sIdx -lt $sLower.Length -and $tIdx -lt $tLower.Length) {
-            if ($sLower[$sIdx] -eq $tLower[$tIdx]) {
+        while ($sIdx -lt $sNorm.Length -and $tIdx -lt $tNorm.Length) {
+            if ($sNorm[$sIdx] -eq $tNorm[$tIdx]) {
                 $subseqScore += 10
                 if ($consecutive -gt 0) { $subseqScore += ($consecutive * 5) }
                 
                 # Word boundary bonus
                 if ($tIdx -eq 0) {
                     $subseqScore += 20
-                } elseif ($tLower[$tIdx - 1] -match '[ _\-\.]') {
+                } elseif ($tNorm[$tIdx - 1] -match '[ _\-\.]') {
                     $subseqScore += 15
                 }
                 
@@ -90,15 +91,15 @@ function Measure-FuzzyMatch {
             $tIdx++
         }
         # Zero score if not all characters matched in order
-        if ($sIdx -lt $sLower.Length) {
+        if ($sIdx -lt $sNorm.Length) {
             $subseqScore = 0
         }
     }
 
     # --- Levenshtein Logic (Edit Distance) ---
     if ($Algorithm -in 'Auto', 'Levenshtein') {
-        $len1 = $sLower.Length
-        $len2 = $tLower.Length
+        $len1 = $sNorm.Length
+        $len2 = $tNorm.Length
         
         # Optimization: Skip if length difference is too vast for typos
         if ([Math]::Abs($len1 - $len2) -le 10) {
@@ -110,7 +111,7 @@ function Measure-FuzzyMatch {
             for ($i = 0; $i -lt $len1; $i++) {
                 $v1[0] = $i + 1
                 for ($j = 0; $j -lt $len2; $j++) {
-                    $cost = if ($sLower[$i] -eq $tLower[$j]) { 0 } else { 1 }
+                    $cost = if ($sNorm[$i] -eq $tNorm[$j]) { 0 } else { 1 }
                     $v1[$j + 1] = [Math]::Min([Math]::Min($v1[$j] + 1, $v0[$j + 1] + 1), $v0[$j] + $cost)
                 }
                 for ($j = 0; $j -le $len2; $j++) { $v0[$j] = $v1[$j] }
@@ -118,7 +119,6 @@ function Measure-FuzzyMatch {
             
             $distance = $v1[$len2]
             $maxLen = [Math]::Max($len1, $len2)
-            # Convert 0-MaxLen distance to a 0-700 score scale
             if ($maxLen -gt 0) {
                 $ratio = ($maxLen - $distance) / $maxLen
                 $levScore = [int]([Math]::Max(0, $ratio) * 700)
