@@ -16,6 +16,7 @@ A powerful interactive selector for arrays or complex objects.
 - Object-aware: use `-DisplayProperty` to specify which property of an object to display in the menu.
 - Clean display logic that prevents artifacts on the screen when navigating between pages of varying lengths.
 - **Automatic Truncation:** Long lines are automatically truncated to fit the terminal width, preventing layout breakage and cursor sync issues.
+- **Live Search Filtering:** When enabled, typing filters the list dynamically using a robust fuzzy-matching algorithm.
 
 **Parameters:**
 - `-Items`: (Required) The array of items to select from.
@@ -25,12 +26,14 @@ A powerful interactive selector for arrays or complex objects.
 - `-Wrap`: (Switch) Enables wrapping from the bottom to the top of a page, and from the last page to the first page.
 - `-NoColor`: (Switch) Disables ANSI color highlighting, relying entirely on the `> ` pointer.
 - `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
+- `-Searchable`: (Switch) Enables live fuzzy-search filtering. When active, alpha-numeric key presses will update a search buffer and dynamically filter the displayed list.
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current page.
 - `←` / `→`: Navigate between pages.
 - `Enter`: Confirm selection.
 - `Esc`: Cancel selection (returns `$null`).
+- `Backspace` / `Alpha-numeric keys`: (When `-Searchable` is used) Modifies the search query to filter the list.
 
 **Example:**
 ```powershell
@@ -186,6 +189,29 @@ The underlying layout engine used by the interactive functions, also available f
 **Example:**
 ```powershell
 Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
+---
+
+### 6. `Measure-FuzzyMatch`
+A utility function for calculating the relevance score between a search term and a target string using a robust fuzzy-matching algorithm.
+
+**Features:**
+- Normalizes input by removing punctuation and collapsing whitespace.
+- Computes scores based on exact matches, word-level partial matching, and pluralization handling (`s`, `ies`, `y`).
+- Automatically falls back to simple substring matching for very short terms.
+- Returns an integer score (higher is better, 0 means no match, 1000 means exact match).
+
+**Parameters:**
+- `-SearchTerm`: (Required) The string you are searching for.
+- `-TargetText`: (Required) The string to evaluate against the search term.
+
+**Example:**
+```powershell
+Import-Module ./pwshui.psd1
+
+$score = Measure-FuzzyMatch -SearchTerm "srv" -TargetText "Server01"
+if ($score -gt 0) {
+    Write-Host "Match found with score: $score"
+}
 ```
 
 ## Global Layout Parameters

@@ -1,3 +1,64 @@
+function Measure-FuzzyMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$SearchTerm,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [string]$TargetText
+    )
+
+    $inputNorm  = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($inputNorm)) { return 0 }
+    
+    $targetNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($targetNorm)) { return 0 }
+
+    if ($targetNorm -eq $inputNorm) { return 1000 }
+
+    $inputWords = $inputNorm -split ' ' | Where-Object { $_.Length -gt 2 }
+    $score = 0
+    $matchedWords = 0
+
+    if ($inputWords.Count -gt 0) {
+        foreach ($word in $inputWords) {
+            $wordMatched = $false
+
+            if ($targetNorm -match [regex]::Escape($word)) {
+                $wordMatched = $true
+            } elseif ($word -match 's$') {
+                if ($targetNorm -match [regex]::Escape($word.TrimEnd('s'))) { $wordMatched = $true }
+            } else {
+                if ($targetNorm -match [regex]::Escape($word + 's')) { $wordMatched = $true }
+            }
+
+            if (-not $wordMatched -and $word -match 'ies$') {
+                if ($targetNorm -match [regex]::Escape(($word -replace 'ies$', 'y'))) { $wordMatched = $true }
+            } elseif (-not $wordMatched -and $word -match 'y$') {
+                if ($targetNorm -match [regex]::Escape(($word -replace 'y$', 'ies'))) { $wordMatched = $true }
+            }
+
+            if ($wordMatched) { $score += 10; $matchedWords++ }
+        }
+    } else {
+        # Fallback for short search terms
+        if ($targetNorm -match [regex]::Escape($inputNorm)) { $score += 10 }
+    }
+
+    $targetContainsInput  = $targetNorm  -match [regex]::Escape($inputNorm)
+    $inputContainsTarget  = $inputNorm -match [regex]::Escape($targetNorm)
+
+    if ($targetContainsInput -or $inputContainsTarget) { $score += 50 }
+
+    if ($inputWords.Count -ge 3 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) {
+        $score += 30
+    } elseif ($inputWords.Count -eq 2 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) {
+        $score += 20
+    }
+
+    return $score
+}
+
 function Write-UIBox {
     [CmdletBinding()]
     param(
@@ -123,7 +184,8 @@ function Get-PaginatedSelection {
         [int]$MaxWidth = 0,
         [int]$X = -1,
         [int]$Y = -1,
-        [switch]$AltScreen
+        [switch]$AltScreen,
+        [switch]$Searchable
     )
 
     $itemList = @($Items)
@@ -131,6 +193,10 @@ function Get-PaginatedSelection {
         Write-Warning "No items to select."
         return $null
     }
+
+    # Internal state for tracking filtered items
+    $filteredItems = $itemList
+    $searchBuffer = ""
 
     # Ensure InitialIndex is within bounds
     if ($InitialIndex -ge $itemList.Count) { $InitialIndex = $itemList.Count - 1 }
@@ -163,9 +229,13 @@ function Get-PaginatedSelection {
         $lastHeight = 0
 
         while ($running) {
+            # Recalculate pagination bounds if list changed
+            $pageCount = [Math]::Max(1, [Math]::Ceiling($filteredItems.Count / $PageSize))
+            if ($pageIndex -ge $pageCount) { $pageIndex = [Math]::Max(0, $pageCount - 1) }
+
             # Calculate current page items
             $startIdx = $pageIndex * $PageSize
-            $currentPageItems = @($itemList | Select-Object -Skip $startIdx -First $PageSize)
+            $currentPageItems = @($filteredItems | Select-Object -Skip $startIdx -First $PageSize)
             
             # Ensure selected index is valid for current page
             if ($selectedIndex -ge $currentPageItems.Count) {
@@ -181,34 +251,51 @@ function Get-PaginatedSelection {
             $firstRender = $false
 
             # Build Sections for UIBox
-            $header = @($Title, ("-" * $Title.Length))
+            $displayTitle = if ($Searchable) {
+                if ($searchBuffer) { "$Title [Search: $searchBuffer]" } else { "$Title [Type to search]" }
+            } else {
+                $Title
+            }
+
+            $header = @($displayTitle, ("-" * $displayTitle.Length))
             
             $body = @()
-            for ($i = 0; $i -lt $currentPageItems.Count; $i++) {
-                $item = $currentPageItems[$i]
-                $displayText = ""
-                if ($DisplayProperty) { $displayText = $item.$DisplayProperty }
-                else { $displayText = $item.ToString() }
-                if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
-                
-                $isRowSelected = ($i -eq $selectedIndex)
-                if ($isRowSelected) {
-                    if ($NoColor) {
-                        $body += "$pointer$displayText"
+            if ($currentPageItems.Count -gt 0) {
+                for ($i = 0; $i -lt $currentPageItems.Count; $i++) {
+                    $item = $currentPageItems[$i]
+                    $displayText = ""
+                    if ($DisplayProperty) { $displayText = $item.$DisplayProperty }
+                    else { $displayText = $item.ToString() }
+                    if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
+                    
+                    $isRowSelected = ($i -eq $selectedIndex)
+                    if ($isRowSelected) {
+                        if ($NoColor) {
+                            $body += "$pointer$displayText"
+                        } else {
+                            $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
+                        }
                     } else {
-                        $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
+                        $body += "$emptyPointer$displayText"
                     }
-                } else {
-                    $body += "$emptyPointer$displayText"
                 }
+            } else {
+                $body += "  (No matches found)"
             }
 
             $pageNumDisplay = "($($pageIndex + 1)/$pageCount)"
-            $rangeDisplay = "($($startIdx + 1)-$([Math]::Min($startIdx + $PageSize, $itemList.Count)) of $($itemList.Count))"
-            $footer = @(
-                "← Prev page $pageNumDisplay   → Next page $pageNumDisplay",
-                "↑↓ Move $rangeDisplay   Enter Select    Esc Cancel"
-            )
+            $endIdx = [Math]::Min($startIdx + $PageSize, $filteredItems.Count)
+            $startDisplay = if ($filteredItems.Count -gt 0) { $startIdx + 1 } else { 0 }
+            $rangeDisplay = "($startDisplay-$endIdx of $($filteredItems.Count))"
+            
+            $footerLines = [System.Collections.Generic.List[string]]::new()
+            $footerLines.Add("← Prev page $pageNumDisplay   → Next page $pageNumDisplay")
+            $footerLines.Add("↑↓ Move $rangeDisplay   Enter Select    Esc Cancel")
+            if ($Searchable) {
+                $footerLines.Add("Type to search   Backspace to delete")
+            }
+
+            $footer = @($footerLines)
 
             # Draw using UIBox
             $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
@@ -226,6 +313,38 @@ function Get-PaginatedSelection {
 
             # Key Input
             $key = [Console]::ReadKey($true)
+
+            if ($Searchable) {
+                $handledSearchKey = $false
+                if ($key.Key -eq 'Backspace') {
+                    if ($searchBuffer.Length -gt 0) {
+                        $searchBuffer = $searchBuffer.Substring(0, $searchBuffer.Length - 1)
+                        $handledSearchKey = $true
+                    }
+                } elseif ([char]::IsLetterOrDigit($key.KeyChar) -or [char]::IsPunctuation($key.KeyChar) -or $key.KeyChar -eq ' ') {
+                    $searchBuffer += $key.KeyChar
+                    $handledSearchKey = $true
+                }
+
+                if ($handledSearchKey) {
+                    if ([string]::IsNullOrEmpty($searchBuffer)) {
+                        $filteredItems = $itemList
+                    } else {
+                        $scoredItems = @()
+                        foreach ($item in $itemList) {
+                            $itemName = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
+                            $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName
+                            if ($score -ge 10) { # Threshold for partial typing
+                                $scoredItems += [PSCustomObject]@{ Item = $item; Score = $score }
+                            }
+                        }
+                        $filteredItems = @($scoredItems | Sort-Object Score -Descending | Select-Object -ExpandProperty Item)
+                    }
+                    $pageIndex = 0
+                    $selectedIndex = 0
+                    continue # Skip standard navigation key checks
+                }
+            }
 
             switch ($key.Key) {
                 'UpArrow' {
@@ -257,7 +376,9 @@ function Get-PaginatedSelection {
                     }
                 }
                 'Enter' {
-                    $result = $itemList[$startIdx + $selectedIndex]
+                    if ($filteredItems.Count -gt 0) {
+                        $result = $filteredItems[$startIdx + $selectedIndex]
+                    }
                     $running = $false
                 }
                 'Escape' {
@@ -866,4 +987,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Invoke-NestedMenu
+Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Invoke-NestedMenu, Measure-FuzzyMatch

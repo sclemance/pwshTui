@@ -32,7 +32,7 @@ $items = 1..50 | ForEach-Object {
     }
 }
 
-$selected = Get-PaginatedSelection -Items $items -PageSize 12 -Title "--- Select a System Object ---" -DisplayProperty "Name" -Wrap
+$selected = Get-PaginatedSelection -Items $items -PageSize 12 -Title "--- Select a System Object ---" -DisplayProperty "Name" -Wrap -Searchable
 
 if ($null -ne $selected) {
     Write-Host "`nYou selected: $($selected.Name) (ID: $($selected.ID))`n" -ForegroundColor Green
