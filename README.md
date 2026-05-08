@@ -27,6 +27,7 @@ A powerful interactive selector for arrays or complex objects.
 - `-NoColor`: (Switch) Disables ANSI color highlighting, relying entirely on the `> ` pointer.
 - `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
 - `-Searchable`: (Switch) Enables live fuzzy-search filtering. When active, alpha-numeric key presses will update a search buffer and dynamically filter the displayed list.
+- `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `Levenshtein`, `Legacy`). Default: `Auto`.
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current page.
@@ -192,26 +193,28 @@ Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 ---
 
 ### 6. `Measure-FuzzyMatch`
-A utility function for calculating the relevance score between a search term and a target string using a robust fuzzy-matching algorithm.
+A utility function for calculating the relevance score between a search term and a target string. It uses a cross-platform, ensemble fuzzy-matching approach written entirely in pure PowerShell, ensuring it works securely in locked-down environments like Azure Automation without compiling C# code.
 
 **Features:**
-- Normalizes input by removing punctuation and collapsing whitespace.
-- Computes scores based on exact matches, word-level partial matching, and pluralization handling (`s`, `ies`, `y`).
-- Automatically falls back to simple substring matching for very short terms.
-- Returns an integer score (higher is better, 0 means no match, 1000 means exact match).
+- **Auto (Hybrid Ensemble):** Automatically calculates both Subsequence and Levenshtein scores and returns the best match.
+- **Subsequence (fzf-style):** Rewards characters that appear in order, with massive bonuses for consecutive characters and word-boundary matches. Ideal for acronyms and abbreviations (e.g., `pwsh` matches `PowerShell`).
+- **Levenshtein (Edit Distance):** Mathematically calculates the distance between strings to catch human typos (e.g., `srever` matches `server`).
+- Returns an integer score scaled from 0 to 1000 (higher is better, 0 means no match, 1000 means exact match).
 
 **Parameters:**
 - `-SearchTerm`: (Required) The string you are searching for.
 - `-TargetText`: (Required) The string to evaluate against the search term.
+- `-Algorithm`: (Optional) Override the default `Auto` ensemble. Valid options: `Auto`, `Subsequence`, `Levenshtein`, `Legacy`.
 
 **Example:**
 ```powershell
 Import-Module ./pwshui.psd1
 
-$score = Measure-FuzzyMatch -SearchTerm "srv" -TargetText "Server01"
-if ($score -gt 0) {
-    Write-Host "Match found with score: $score"
-}
+# Finds 'Server01' using a subsequence abbreviation
+$score1 = Measure-FuzzyMatch -SearchTerm "sv01" -TargetText "Server01"
+
+# Finds 'Storage' despite a typo
+$score2 = Measure-FuzzyMatch -SearchTerm "storge" -TargetText "Storage"
 ```
 
 ## Global Layout Parameters

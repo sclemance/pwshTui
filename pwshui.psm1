@@ -5,58 +5,131 @@ function Measure-FuzzyMatch {
         [string]$SearchTerm,
 
         [Parameter(Mandatory = $true, Position = 1)]
-        [string]$TargetText
+        [string]$TargetText,
+
+        [Parameter(Position = 2)]
+        [ValidateSet('Auto', 'Subsequence', 'Levenshtein', 'Legacy')]
+        [string]$Algorithm = 'Auto'
     )
 
-    $inputNorm  = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
-    if ([string]::IsNullOrWhiteSpace($inputNorm)) { return 0 }
-    
-    $targetNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
-    if ([string]::IsNullOrWhiteSpace($targetNorm)) { return 0 }
+    if ([string]::IsNullOrWhiteSpace($SearchTerm) -or [string]::IsNullOrWhiteSpace($TargetText)) {
+        return 0
+    }
 
-    if ($targetNorm -eq $inputNorm) { return 1000 }
+    # --- Legacy Fallback ---
+    if ($Algorithm -eq 'Legacy') {
+        $inputNorm  = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
+        $targetNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim()
+        if ($targetNorm -eq $inputNorm) { return 1000 }
 
-    $inputWords = $inputNorm -split ' ' | Where-Object { $_.Length -gt 2 }
-    $score = 0
-    $matchedWords = 0
+        $inputWords = $inputNorm -split ' ' | Where-Object { $_.Length -gt 2 }
+        $score = 0
+        $matchedWords = 0
 
-    if ($inputWords.Count -gt 0) {
-        foreach ($word in $inputWords) {
-            $wordMatched = $false
+        if ($inputWords.Count -gt 0) {
+            foreach ($word in $inputWords) {
+                $wordMatched = $false
+                if ($targetNorm -match [regex]::Escape($word)) { $wordMatched = $true }
+                elseif ($word -match 's$') { if ($targetNorm -match [regex]::Escape($word.TrimEnd('s'))) { $wordMatched = $true } }
+                else { if ($targetNorm -match [regex]::Escape($word + 's')) { $wordMatched = $true } }
 
-            if ($targetNorm -match [regex]::Escape($word)) {
-                $wordMatched = $true
-            } elseif ($word -match 's$') {
-                if ($targetNorm -match [regex]::Escape($word.TrimEnd('s'))) { $wordMatched = $true }
-            } else {
-                if ($targetNorm -match [regex]::Escape($word + 's')) { $wordMatched = $true }
+                if (-not $wordMatched -and $word -match 'ies$') { if ($targetNorm -match [regex]::Escape(($word -replace 'ies$', 'y'))) { $wordMatched = $true } }
+                elseif (-not $wordMatched -and $word -match 'y$') { if ($targetNorm -match [regex]::Escape(($word -replace 'y$', 'ies'))) { $wordMatched = $true } }
+
+                if ($wordMatched) { $score += 10; $matchedWords++ }
             }
-
-            if (-not $wordMatched -and $word -match 'ies$') {
-                if ($targetNorm -match [regex]::Escape(($word -replace 'ies$', 'y'))) { $wordMatched = $true }
-            } elseif (-not $wordMatched -and $word -match 'y$') {
-                if ($targetNorm -match [regex]::Escape(($word -replace 'y$', 'ies'))) { $wordMatched = $true }
-            }
-
-            if ($wordMatched) { $score += 10; $matchedWords++ }
+        } else {
+            if ($targetNorm -match [regex]::Escape($inputNorm)) { $score += 10 }
         }
-    } else {
-        # Fallback for short search terms
-        if ($targetNorm -match [regex]::Escape($inputNorm)) { $score += 10 }
+
+        $targetContainsInput  = $targetNorm  -match [regex]::Escape($inputNorm)
+        $inputContainsTarget  = $inputNorm -match [regex]::Escape($targetNorm)
+
+        if ($targetContainsInput -or $inputContainsTarget) { $score += 50 }
+
+        if ($inputWords.Count -ge 3 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) { $score += 30 }
+        elseif ($inputWords.Count -eq 2 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) { $score += 20 }
+
+        return $score
     }
 
-    $targetContainsInput  = $targetNorm  -match [regex]::Escape($inputNorm)
-    $inputContainsTarget  = $inputNorm -match [regex]::Escape($targetNorm)
+    # --- Fast Paths (Common for Auto, Subsequence, Levenshtein) ---
+    $sLower = $SearchTerm.ToLowerInvariant()
+    $tLower = $TargetText.ToLowerInvariant()
 
-    if ($targetContainsInput -or $inputContainsTarget) { $score += 50 }
+    if ($tLower -eq $sLower) { return 1000 }
+    if ($tLower.StartsWith($sLower)) { return 900 }
+    if ($tLower.Contains($sLower)) { return 800 }
 
-    if ($inputWords.Count -ge 3 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) {
-        $score += 30
-    } elseif ($inputWords.Count -eq 2 -and $matchedWords -eq $inputWords.Count -and $targetContainsInput -and $inputContainsTarget) {
-        $score += 20
+    $subseqScore = 0
+    $levScore = 0
+
+    # --- Subsequence Logic (fzf-style) ---
+    if ($Algorithm -in 'Auto', 'Subsequence') {
+        $sIdx = 0
+        $tIdx = 0
+        $consecutive = 0
+        
+        while ($sIdx -lt $sLower.Length -and $tIdx -lt $tLower.Length) {
+            if ($sLower[$sIdx] -eq $tLower[$tIdx]) {
+                $subseqScore += 10
+                if ($consecutive -gt 0) { $subseqScore += ($consecutive * 5) }
+                
+                # Word boundary bonus
+                if ($tIdx -eq 0) {
+                    $subseqScore += 20
+                } elseif ($tLower[$tIdx - 1] -match '[ _\-\.]') {
+                    $subseqScore += 15
+                }
+                
+                $consecutive++
+                $sIdx++
+            } else {
+                $consecutive = 0
+            }
+            $tIdx++
+        }
+        # Zero score if not all characters matched in order
+        if ($sIdx -lt $sLower.Length) {
+            $subseqScore = 0
+        }
     }
 
-    return $score
+    # --- Levenshtein Logic (Edit Distance) ---
+    if ($Algorithm -in 'Auto', 'Levenshtein') {
+        $len1 = $sLower.Length
+        $len2 = $tLower.Length
+        
+        # Optimization: Skip if length difference is too vast for typos
+        if ([Math]::Abs($len1 - $len2) -le 10) {
+            $v0 = [int[]]::new($len2 + 1)
+            $v1 = [int[]]::new($len2 + 1)
+
+            for ($i = 0; $i -le $len2; $i++) { $v0[$i] = $i }
+
+            for ($i = 0; $i -lt $len1; $i++) {
+                $v1[0] = $i + 1
+                for ($j = 0; $j -lt $len2; $j++) {
+                    $cost = if ($sLower[$i] -eq $tLower[$j]) { 0 } else { 1 }
+                    $v1[$j + 1] = [Math]::Min([Math]::Min($v1[$j] + 1, $v0[$j + 1] + 1), $v0[$j] + $cost)
+                }
+                for ($j = 0; $j -le $len2; $j++) { $v0[$j] = $v1[$j] }
+            }
+            
+            $distance = $v1[$len2]
+            $maxLen = [Math]::Max($len1, $len2)
+            # Convert 0-MaxLen distance to a 0-700 score scale
+            if ($maxLen -gt 0) {
+                $ratio = ($maxLen - $distance) / $maxLen
+                $levScore = [int]([Math]::Max(0, $ratio) * 700)
+            }
+        }
+    }
+
+    if ($Algorithm -eq 'Subsequence') { return $subseqScore }
+    if ($Algorithm -eq 'Levenshtein') { return $levScore }
+    
+    return [Math]::Max($subseqScore, $levScore)
 }
 
 function Write-UIBox {
@@ -185,7 +258,11 @@ function Get-PaginatedSelection {
         [int]$X = -1,
         [int]$Y = -1,
         [switch]$AltScreen,
-        [switch]$Searchable
+        [switch]$Searchable,
+
+        [Parameter()]
+        [ValidateSet('Auto', 'Subsequence', 'Levenshtein', 'Legacy')]
+        [string]$SearchAlgorithm = 'Auto'
     )
 
     $itemList = @($Items)
@@ -333,7 +410,7 @@ function Get-PaginatedSelection {
                         $scoredItems = @()
                         foreach ($item in $itemList) {
                             $itemName = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
-                            $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName
+                            $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName -Algorithm $SearchAlgorithm
                             if ($score -ge 10) { # Threshold for partial typing
                                 $scoredItems += [PSCustomObject]@{ Item = $item; Score = $score }
                             }
