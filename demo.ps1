@@ -24,11 +24,36 @@ $menuSelection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal"
 if ($menuSelection) { Write-Host "Captured Action Value: $menuSelection`n" -ForegroundColor Green }
 
 # --- Demo 2: Paginated Selection ---
-$items = 1..50 | ForEach-Object { 
+$demoData = @(
+    "Active Directory Domain Services"
+    "Amazon Web Services (AWS)"
+    "Azure Virtual Machines"
+    "Cisco AnyConnect VPN"
+    "Cove Data Protection"
+    "Docker Container Runtime"
+    "HaloPSA Professional Services"
+    "Hyper-V Host Node"
+    "Kubernetes Cluster"
+    "Microsoft Exchange Online"
+    "Microsoft SQL Server"
+    "Microsoft Teams"
+    "Network Policy Server"
+    "Palo Alto Firewall"
+    "PostgreSQL Database"
+    "PowerShell Core"
+    "ServiceNow Ticketing"
+    "SharePoint Online"
+    "Ubuntu Linux 24.04"
+    "Veeam Backup & Replication"
+    "VMware vSphere ESXi"
+    "Windows Server 2022"
+)
+
+$items = 0..($demoData.Count - 1) | ForEach-Object { 
     [PSCustomObject]@{
-        ID = $_
-        Name = "Item $_"
-        Description = "This is the description for item $_"
+        ID = $_ + 100
+        Name = $demoData[$_]
+        Type = if ($demoData[$_] -match "Microsoft|Windows|Azure|Active Directory") { "Microsoft" } else { "Third-Party" }
     }
 }
 
