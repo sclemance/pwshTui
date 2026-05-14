@@ -545,13 +545,7 @@ function Get-PaginatedSelection {
             }
         }
     } finally {
-        # Restore cursor to its original state
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-
-        # ANSI to move cursor up before clearing on exit if we rendered at least once
+        # Move cursor back to top of the box (if rendered) before clearing
         if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
             Write-Host "`e[$($lastHeight)A" -NoNewline
         }
@@ -636,7 +630,6 @@ function Read-MaskedInput {
     }
     
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
         while ($running) {
@@ -736,14 +729,13 @@ function Read-MaskedInput {
         }
 
         # Final Draw to remove highlight
-        Write-Host "`r$Prompt $displayStr`e[K" 
+        Write-Host "`r$Prompt $displayStr`e[K"
     } finally {
         # Restore cursor to its original state
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-        
+
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
     }
@@ -800,7 +792,6 @@ function Read-ValidatedInput {
     } catch {}
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
     try {
         while ($running) {
@@ -870,13 +861,12 @@ function Read-ValidatedInput {
         }
 
         $finalStr = -join $rawInput
-        Write-Host "`r$Prompt $finalStr`e[K" 
+        Write-Host "`r$Prompt $finalStr`e[K"
     } finally {
         # Restore cursor to its original state
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
 
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
