@@ -1,6 +1,47 @@
 Set-StrictMode -Version Latest
 
 function Measure-FuzzyMatch {
+    <#
+    .SYNOPSIS
+        Score how well a search term matches a target string (0-1000).
+    .DESCRIPTION
+        Returns an integer relevance score using an intent-biased ensemble of
+        Subsequence (fzf-style) and Jaro-Winkler algorithms.
+
+        Score bands:
+          1000 = exact match
+           900 = prefix match
+           800 = substring match
+          1-700 = ranked partial match (algorithm-dependent)
+             0 = no match
+
+        Normalization converts structural separators (- _ . / : \) and
+        camelCase/PascalCase boundaries into spaces so word structure is
+        uniformly visible to all algorithms. Fast paths additionally check a
+        compact (space-removed) form so identifier-style queries still hit
+        prefix/substring shortcuts.
+    .PARAMETER SearchTerm
+        The string the user is searching for.
+    .PARAMETER TargetText
+        The string being evaluated.
+    .PARAMETER Algorithm
+        Auto (default): intent-biased max of Subsequence + Jaro-Winkler.
+        Subsequence: fzf-style ordered character match with word-boundary bonus.
+        JaroWinkler: similarity + prefix boost; good for typos/transpositions.
+        Legacy: word-based with morphological variants (plural/singular).
+    .EXAMPLE
+        PS> Measure-FuzzyMatch -SearchTerm "srever" -TargetText "server"
+        665
+
+        Transposition typo: JW recognizes high similarity, Auto preserves it.
+    .EXAMPLE
+        PS> Measure-FuzzyMatch -SearchTerm "fzmgr" -TargetText "fuzzy match manager"
+        496
+
+        Vowel-sparse abbreviation: intent detector tilts toward Subsequence.
+    .OUTPUTS
+        [int] in [0, 1000].
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
@@ -215,6 +256,36 @@ function Measure-FuzzyMatch {
 }
 
 function Write-UIBox {
+    <#
+    .SYNOPSIS
+        Render a header/body/footer text block with optional Unicode border.
+    .DESCRIPTION
+        Composes text into a renderable frame with automatic width calculation,
+        ANSI-aware truncation (lines that exceed the inner width are truncated
+        on visible characters while preserving inline ANSI escape sequences),
+        and either absolute or relative positioning. Returns the line count of
+        the rendered frame so callers can manage redraws.
+    .PARAMETER Header
+        Lines drawn above the body. Separated from body by a rule if Border.
+    .PARAMETER Body
+        Required. The main content lines.
+    .PARAMETER Footer
+        Lines drawn below the body. Separated from body by a rule if Border.
+    .PARAMETER Border
+        Wrap the content in a Unicode box.
+    .PARAMETER MinWidth
+        Lower bound for inner content width. 0 = no minimum.
+    .PARAMETER MaxWidth
+        Upper bound for outer width. 0 = use terminal width.
+    .PARAMETER X
+        Absolute column to render at. -1 = current cursor position.
+    .PARAMETER Y
+        Absolute row to render at. -1 = current cursor position.
+    .PARAMETER AltScreen
+        Reserved; the caller controls alt-screen mode.
+    .OUTPUTS
+        [int] number of lines rendered.
+    #>
     [CmdletBinding()]
     param(
         [string[]]$Header,
@@ -340,6 +411,42 @@ function Write-UIBox {
 }
 
 function Get-PaginatedSelection {
+    <#
+    .SYNOPSIS
+        Interactive paginated list selector with optional live fuzzy search.
+    .DESCRIPTION
+        Renders a paginated list and returns the selected item, or $null on
+        cancel. Supports keyboard navigation, page/selection wrap, an initial
+        highlighted index, and (with -Searchable) live fuzzy-search filtering
+        powered by Measure-FuzzyMatch.
+
+        Keys: Up/Down move within page, Left/Right change page, Enter selects,
+        Esc cancels. In Searchable mode any printable character extends the
+        search buffer; Backspace deletes from it.
+    .PARAMETER Items
+        Required. Collection to choose from (strings or objects).
+    .PARAMETER PageSize
+        Items per page. Default 10.
+    .PARAMETER Title
+        Header text shown above the list.
+    .PARAMETER DisplayProperty
+        For object inputs, which property to display (and search against).
+    .PARAMETER Wrap
+        Enable selection and page wrap at boundaries.
+    .PARAMETER NoColor
+        Disable ANSI styling on the selected row.
+    .PARAMETER InitialIndex
+        0-based index of the item to highlight on open.
+    .PARAMETER Searchable
+        Enable live fuzzy-search filtering on keystrokes.
+    .PARAMETER SearchAlgorithm
+        Fuzzy algorithm to use. See Measure-FuzzyMatch for details.
+    .PARAMETER SearchThreshold
+        Minimum match score (0-1000) for an item to appear when searching.
+        Default 100. Lower = more permissive.
+    .OUTPUTS
+        The selected item, or $null if cancelled.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
@@ -371,7 +478,12 @@ function Get-PaginatedSelection {
 
         [Parameter()]
         [ValidateSet('Auto', 'Subsequence', 'JaroWinkler', 'Legacy')]
-        [string]$SearchAlgorithm = 'Auto'
+        [string]$SearchAlgorithm = 'Auto',
+
+        # Minimum Measure-FuzzyMatch score for an item to appear in filtered
+        # results. Scores 0-1000; 100 hides obvious noise while keeping fuzzy
+        # partial matches visible. Set lower to be more permissive.
+        [int]$SearchThreshold = 100
     )
 
     $itemList = @($Items)
@@ -383,6 +495,7 @@ function Get-PaginatedSelection {
     # Internal state for tracking filtered items
     $filteredItems = $itemList
     $searchBuffer = ""
+    $previousSearchBuffer = ""
 
     # Ensure InitialIndex is within bounds
     if ($InitialIndex -ge $itemList.Count) { $InitialIndex = $itemList.Count - 1 }
@@ -507,7 +620,7 @@ function Get-PaginatedSelection {
                         $searchBuffer = $searchBuffer.Substring(0, $searchBuffer.Length - 1)
                         $handledSearchKey = $true
                     }
-                } elseif ([char]::IsLetterOrDigit($key.KeyChar) -or [char]::IsPunctuation($key.KeyChar) -or $key.KeyChar -eq ' ') {
+                } elseif ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar)) {
                     $searchBuffer += $key.KeyChar
                     $handledSearchKey = $true
                 }
@@ -516,16 +629,26 @@ function Get-PaginatedSelection {
                     if ([string]::IsNullOrEmpty($searchBuffer)) {
                         $filteredItems = $itemList
                     } else {
+                        # Incremental narrowing: if the new buffer extends the previous
+                        # one, scoring the prior filtered set is sufficient (chars-in-order
+                        # algorithms can only lose matches as the query grows). Backspace
+                        # / replacement reverts to the full list.
+                        $candidateSet = if ($previousSearchBuffer -and $searchBuffer.StartsWith($previousSearchBuffer)) {
+                            $filteredItems
+                        } else {
+                            $itemList
+                        }
                         $scoredItems = @()
-                        foreach ($item in $itemList) {
+                        foreach ($item in $candidateSet) {
                             $itemName = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
                             $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName -Algorithm $SearchAlgorithm
-                            if ($score -ge 10) { # Threshold for partial typing
+                            if ($score -ge $SearchThreshold) {
                                 $scoredItems += [PSCustomObject]@{ Item = $item; Score = $score }
                             }
                         }
                         $filteredItems = @($scoredItems | Sort-Object Score -Descending | Select-Object -ExpandProperty Item)
                     }
+                    $previousSearchBuffer = $searchBuffer
                     $pageIndex = 0
                     $selectedIndex = 0
                     continue # Skip standard navigation key checks
@@ -598,6 +721,37 @@ function Get-PaginatedSelection {
 }
 
 function Read-MaskedInput {
+    <#
+    .SYNOPSIS
+        Prompt for input that conforms to a fixed-position mask.
+    .DESCRIPTION
+        Renders a mask template with slot placeholders and accepts only
+        characters matching the slot type at the current position. Useful for
+        serial numbers, license keys, MAC addresses, etc.
+
+        Mask characters:
+          # = digit (0-9)
+          a = letter
+          X = hex (auto-uppercased)
+          x = hex (auto-lowercased)
+          * = any non-control character
+        Any other character is treated as a literal separator.
+    .PARAMETER Mask
+        Required. The mask string defining slots and separators.
+    .PARAMETER Prompt
+        Label shown before the masked field.
+    .PARAMETER Placeholder
+        Character displayed for empty slots. Default '_'.
+    .PARAMETER AllowIncomplete
+        Allow Enter to return even when not all slots are filled.
+    .PARAMETER ReturnRaw
+        Return only the entered characters (no separators or placeholders).
+    .EXAMPLE
+        PS> Read-MaskedInput -Mask 'XX:XX:XX:XX:XX:XX' -Prompt 'MAC:'
+        Reads a MAC address with auto-uppercased hex.
+    .OUTPUTS
+        [string] formatted value, or $null if cancelled.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
@@ -797,6 +951,25 @@ function Read-MaskedInput {
 }
 
 function Read-ValidatedInput {
+    <#
+    .SYNOPSIS
+        Prompt for input that must match a regex pattern.
+    .DESCRIPTION
+        Renders the input with green/red coloring based on whether the current
+        buffer matches the validation pattern. Enter is only accepted when the
+        input is valid (or empty if -AllowEmpty was set).
+    .PARAMETER Prompt
+        Required. Label shown before the input field.
+    .PARAMETER Pattern
+        Required. Regex pattern the input must match to be accepted.
+    .PARAMETER AllowEmpty
+        Treat empty input as valid (returns "").
+    .EXAMPLE
+        PS> Read-ValidatedInput -Prompt 'Email:' -Pattern '^[^@]+@[^@]+\.[^@]+$'
+        Reads an email address with live red/green feedback.
+    .OUTPUTS
+        [string] entered value, or $null if cancelled or empty (without -AllowEmpty).
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
@@ -909,6 +1082,35 @@ function Read-ValidatedInput {
 }
 
 function Invoke-NestedMenu {
+    <#
+    .SYNOPSIS
+        Render and navigate a nested menu tree.
+    .DESCRIPTION
+        Walks a tree of menu items where each node has Label, Value, and
+        optional Children. Supports keyboard navigation (Up/Down or numeric
+        1-N jump), drill-in (Right or Enter on a parent), back (Left), and
+        deep-linking on open via -InitialPath. Returns the selected leaf's
+        Value, or $null if cancelled.
+    .PARAMETER MenuTree
+        Required. Array of menu items. Each item is a hashtable or object with
+        Label / Value / Children members.
+    .PARAMETER Title
+        Root menu title shown in the breadcrumb. Default 'Main Menu'.
+    .PARAMETER InitialPath
+        Optional path to pre-drill on open. Each segment is either a numeric
+        index or a string matching a Label or Value at that depth.
+    .EXAMPLE
+        $tree = @(
+            @{ Label='Settings'; Children=@(
+                @{ Label='Display'; Value='display' }
+                @{ Label='Network'; Value='network' }
+            )}
+            @{ Label='Exit'; Value='exit' }
+        )
+        PS> Invoke-NestedMenu -MenuTree $tree
+    .OUTPUTS
+        The Value of the selected leaf node, or $null if cancelled.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
