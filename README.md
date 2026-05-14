@@ -238,3 +238,18 @@ All functions in this module share the following safety guarantees:
 
 1. Copy the `pwshTui` folder to one of the paths listed in your `$env:PSModulePath`.
 2. Run `Import-Module pwshTui` in your script or console.
+
+## What's Next
+
+pwshTui covers the most common script-level prompts well — single-choice selection, masked / validated input, and nested menus. The following are on the table as the library grows, listed roughly by scope:
+
+- **`Read-Confirmation`** — dedicated Yes/No prompt with single-key answer.
+- **`Get-PaginatedSelection -MultiSelect`** — space-to-toggle, returns the chosen items as an array.
+- **`Show-Spinner` / progress wrapper** — animated indicator while a long-running scriptblock executes.
+- **Terminal resize handling** — recalculate layout on `WindowWidth` / `WindowHeight` changes.
+- **`Get-PaginatedSelection -Columns`** — auto-aligned tabular display for picking from object collections.
+- **`Read-Form`** — multi-field composition with Tab navigation, shared layout, and per-field validation.
+
+Continued investment in `Measure-FuzzyMatch` is also on the list: word-aware Jaro-Winkler, additional intent signals (subsequence cluster span, original-case acronyms, multi-word queries), Unicode/diacritic folding, and tunable bias weights.
+
+Out of scope (deliberately): multi-pane / split-window layouts, async event loops, theming frameworks, declarative UI DSLs. pwshTui aims to stay a lightweight library of script primitives — not an application framework.
