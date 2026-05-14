@@ -1209,6 +1209,10 @@ function Invoke-NestedMenu {
     $running = $true
     $result = $null
     $numString = ""
+    # Stale-buffer reset: digit input older than this is discarded so that
+    # typing `1`, idling, then typing `5` selects item 5 instead of item 15.
+    $numStringTimeoutMs = 1000
+    $lastDigitTime = [DateTime]::MinValue
 
     # Track original cursor state
     $originalCursorVisible = $true
@@ -1281,6 +1285,12 @@ function Invoke-NestedMenu {
             $key = [Console]::ReadKey($true)
 
             if ([char]::IsDigit($key.KeyChar)) {
+                # Drop the buffer if the previous digit is older than the timeout.
+                if ((([DateTime]::Now) - $lastDigitTime).TotalMilliseconds -gt $numStringTimeoutMs) {
+                    $numString = ""
+                }
+                $lastDigitTime = [DateTime]::Now
+
                 $numString += $key.KeyChar
                 $idx = [int]$numString - 1
                 if ($idx -ge 0 -and $idx -lt $currentItems.Count) {
