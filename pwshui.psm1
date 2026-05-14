@@ -8,7 +8,7 @@ function Measure-FuzzyMatch {
         [string]$TargetText,
 
         [Parameter(Position = 2)]
-        [ValidateSet('Auto', 'Subsequence', 'Levenshtein', 'Legacy')]
+        [ValidateSet('Auto', 'Subsequence', 'JaroWinkler', 'Legacy')]
         [string]$Algorithm = 'Auto'
     )
 
@@ -16,11 +16,29 @@ function Measure-FuzzyMatch {
         return 0
     }
 
-    # Normalize both strings: remove punctuation, collapse whitespace, lowercase
-    $sNorm = ($SearchTerm -replace '[^\w\s]', '' -replace '\s+', ' ').Trim().ToLowerInvariant()
-    $tNorm = ($TargetText -replace '[^\w\s]', '' -replace '\s+', ' ').Trim().ToLowerInvariant()
+    # Normalize: split structural separators (-_./:\) and camelCase/PascalCase
+    # boundaries into spaces so word structure is uniformly visible to all
+    # algorithms, then lowercase. -creplace is case-sensitive (required for the
+    # camelCase patterns; PS's default -replace is case-insensitive).
+    $sNorm = ($SearchTerm `
+        -creplace '(?<=[a-z0-9])(?=[A-Z])', ' ' `
+        -creplace '(?<=[A-Z])(?=[A-Z][a-z])', ' ' `
+        -replace '[-_./:\\]+', ' ' `
+        -replace '[^\w\s]', '' `
+        -replace '\s+', ' ').Trim().ToLowerInvariant()
+    $tNorm = ($TargetText `
+        -creplace '(?<=[a-z0-9])(?=[A-Z])', ' ' `
+        -creplace '(?<=[A-Z])(?=[A-Z][a-z])', ' ' `
+        -replace '[-_./:\\]+', ' ' `
+        -replace '[^\w\s]', '' `
+        -replace '\s+', ' ').Trim().ToLowerInvariant()
 
     if ([string]::IsNullOrWhiteSpace($sNorm)) { return 0 }
+
+    # Compact form (spaces removed) so users who type identifiers without
+    # separators (e.g. "myserver" for "my-server-01") still hit the fast paths.
+    $sCompact = $sNorm -replace ' ', ''
+    $tCompact = $tNorm -replace ' ', ''
 
     # --- Legacy Fallback ---
     if ($Algorithm -eq 'Legacy') {
@@ -57,32 +75,35 @@ function Measure-FuzzyMatch {
         return $score
     }
 
-    # --- Fast Paths (Common for Auto, Subsequence, Levenshtein) ---
-    if ($tNorm -eq $sNorm) { return 1000 }
-    if ($tNorm.StartsWith($sNorm)) { return 900 }
-    if ($tNorm.Contains($sNorm)) { return 800 }
+    # --- Fast Paths (Common for Auto, Subsequence, JaroWinkler) ---
+    # Check both spaced and compact forms so identifier-style queries don't
+    # regress when normalization preserves separators as spaces.
+    if ($tNorm -eq $sNorm -or $tCompact -eq $sCompact) { return 1000 }
+    if ($tNorm.StartsWith($sNorm) -or $tCompact.StartsWith($sCompact)) { return 900 }
+    if ($tNorm.Contains($sNorm) -or $tCompact.Contains($sCompact)) { return 800 }
 
     $subseqScore = 0
-    $levScore = 0
+    $jwScore = 0
 
     # --- Subsequence Logic (fzf-style) ---
     if ($Algorithm -in 'Auto', 'Subsequence') {
         $sIdx = 0
         $tIdx = 0
         $consecutive = 0
-        
+
         while ($sIdx -lt $sNorm.Length -and $tIdx -lt $tNorm.Length) {
             if ($sNorm[$sIdx] -eq $tNorm[$tIdx]) {
                 $subseqScore += 10
                 if ($consecutive -gt 0) { $subseqScore += ($consecutive * 5) }
-                
-                # Word boundary bonus
+
+                # Word boundary bonus (normalization converts all structural
+                # separators to spaces, so a space is the only boundary marker).
                 if ($tIdx -eq 0) {
                     $subseqScore += 20
-                } elseif ($tNorm[$tIdx - 1] -match '[ _\-\.]') {
+                } elseif ($tNorm[$tIdx - 1] -eq ' ') {
                     $subseqScore += 15
                 }
-                
+
                 $consecutive++
                 $sIdx++
             } else {
@@ -102,42 +123,93 @@ function Measure-FuzzyMatch {
         }
     }
 
-    # --- Levenshtein Logic (Edit Distance) ---
-    if ($Algorithm -in 'Auto', 'Levenshtein') {
+    # --- Jaro-Winkler Logic ---
+    if ($Algorithm -in 'Auto', 'JaroWinkler') {
         $len1 = $sNorm.Length
         $len2 = $tNorm.Length
-        
-        # Optimization: Skip if length difference is too vast for typos
-        if ([Math]::Abs($len1 - $len2) -le 10) {
-            $v0 = [int[]]::new($len2 + 1)
-            $v1 = [int[]]::new($len2 + 1)
 
-            for ($i = 0; $i -le $len2; $i++) { $v0[$i] = $i }
+        if ($len1 -gt 0 -and $len2 -gt 0) {
+            $matchWindow = [Math]::Max(0, [int][Math]::Floor([Math]::Max($len1, $len2) / 2.0) - 1)
+            $s1Matches = [bool[]]::new($len1)
+            $s2Matches = [bool[]]::new($len2)
+            $matchCount = 0
 
             for ($i = 0; $i -lt $len1; $i++) {
-                $v1[0] = $i + 1
-                for ($j = 0; $j -lt $len2; $j++) {
-                    $cost = if ($sNorm[$i] -eq $tNorm[$j]) { 0 } else { 1 }
-                    $v1[$j + 1] = [Math]::Min([Math]::Min($v1[$j] + 1, $v0[$j + 1] + 1), $v0[$j] + $cost)
+                $start = [Math]::Max(0, $i - $matchWindow)
+                $end = [Math]::Min($i + $matchWindow + 1, $len2)
+                for ($j = $start; $j -lt $end; $j++) {
+                    if ($s2Matches[$j]) { continue }
+                    if ($sNorm[$i] -ne $tNorm[$j]) { continue }
+                    $s1Matches[$i] = $true
+                    $s2Matches[$j] = $true
+                    $matchCount++
+                    break
                 }
-                for ($j = 0; $j -le $len2; $j++) { $v0[$j] = $v1[$j] }
             }
-            
-            $distance = $v1[$len2]
-            $maxLen = [Math]::Max($len1, $len2)
-            if ($maxLen -gt 0) {
-                $ratio = ($maxLen - $distance) / $maxLen
-                $levScore = [int]([Math]::Max(0, $ratio) * 700)
+
+            if ($matchCount -gt 0) {
+                # Count transpositions (matched chars out of order, halved)
+                $transpositions = 0
+                $k = 0
+                for ($i = 0; $i -lt $len1; $i++) {
+                    if (-not $s1Matches[$i]) { continue }
+                    while (-not $s2Matches[$k]) { $k++ }
+                    if ($sNorm[$i] -ne $tNorm[$k]) { $transpositions++ }
+                    $k++
+                }
+                $transpositions = $transpositions / 2.0
+
+                $jaro = (($matchCount / [double]$len1) + ($matchCount / [double]$len2) + (($matchCount - $transpositions) / $matchCount)) / 3.0
+
+                # Winkler prefix boost: up to 4 chars, p = 0.1
+                $prefix = 0
+                $maxPrefix = [Math]::Min(4, [Math]::Min($len1, $len2))
+                for ($i = 0; $i -lt $maxPrefix; $i++) {
+                    if ($sNorm[$i] -eq $tNorm[$i]) { $prefix++ } else { break }
+                }
+
+                $jw = $jaro + ($prefix * 0.1 * (1.0 - $jaro))
+                $jwScore = [int]([Math]::Max(0.0, [Math]::Min(1.0, $jw)) * 700)
             }
         }
     }
 
     if ($Algorithm -eq 'Subsequence') { return $subseqScore }
-    if ($Algorithm -eq 'Levenshtein') { return $levScore }
+    if ($Algorithm -eq 'JaroWinkler') { return $jwScore }
 
-    # Future: replace Math.Max with a weighted blend (e.g. 60% subseq / 40% Jaro-Winkler)
-    # Future: replace Levenshtein with Jaro-Winkler for better short-string and transposition handling
-    return [Math]::Max($subseqScore, $levScore)
+    # --- Auto: intent-biased Max of JW and Subsequence ---
+    # Detect signals about user intent (typing the target vs. abbreviating) and tilt
+    # the contest toward the algorithm best suited to that intent. We bias the
+    # *loser's* score down rather than averaging — Math.Max means the winning signal
+    # always survives intact, so a strong typo recognition isn't diluted by a 0
+    # subsequence score (and vice versa).
+    $intent = 0.0
+
+    # Signal 1: length ratio. r>=0.7 ~ user is typing the target (typo intent);
+    # r<=0.3 ~ user is abbreviating sparsely (subsequence intent).
+    $ratio = $sNorm.Length / [double]$tNorm.Length
+    if ($ratio -ge 0.7) {
+        $intent -= 0.5
+    } elseif ($ratio -le 0.3) {
+        $intent += 0.5
+    }
+
+    # Signal 2: vowel sparseness in the search term. Strong abbreviation marker
+    # (e.g. cfg, pwsh, mgr). Skipped on very short inputs where the signal is noisy.
+    if ($sNorm.Length -ge 3) {
+        $vowelCount = ($sNorm -replace '[^aeiou]', '').Length
+        if (($vowelCount / [double]$sNorm.Length) -lt 0.2) {
+            $intent += 0.3
+        }
+    }
+
+    $intent = [Math]::Max(-1.0, [Math]::Min(1.0, $intent))
+
+    # Apply bias: positive intent (abbreviation) penalizes JW; negative penalizes Sub.
+    # Max keeps the recognized signal intact; bias just tilts ties and ambiguity.
+    $jwBias  = 1.0 - [Math]::Max(0.0, $intent) * 0.3
+    $subBias = 1.0 + [Math]::Min(0.0, $intent) * 0.3
+    return [int][Math]::Max($jwScore * $jwBias, $subseqScore * $subBias)
 }
 
 function Write-UIBox {
@@ -269,7 +341,7 @@ function Get-PaginatedSelection {
         [switch]$Searchable,
 
         [Parameter()]
-        [ValidateSet('Auto', 'Subsequence', 'Levenshtein', 'Legacy')]
+        [ValidateSet('Auto', 'Subsequence', 'JaroWinkler', 'Legacy')]
         [string]$SearchAlgorithm = 'Auto'
     )
 

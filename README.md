@@ -27,7 +27,7 @@ A powerful interactive selector for arrays or complex objects.
 - `-NoColor`: (Switch) Disables ANSI color highlighting, relying entirely on the `> ` pointer.
 - `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
 - `-Searchable`: (Switch) Enables live fuzzy-search filtering. When active, alpha-numeric key presses will update a search buffer and dynamically filter the displayed list.
-- `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `Levenshtein`, `Legacy`). Default: `Auto`.
+- `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `JaroWinkler`, `Legacy`). Default: `Auto`.
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current page.
@@ -196,15 +196,16 @@ Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 A utility function for calculating the relevance score between a search term and a target string. It uses a cross-platform, ensemble fuzzy-matching approach written entirely in pure PowerShell, ensuring it works securely in locked-down environments like Azure Automation without compiling C# code.
 
 **Features:**
-- **Auto (Hybrid Ensemble):** Automatically calculates both Subsequence and Levenshtein scores and returns the best match.
-- **Subsequence (fzf-style):** Rewards characters that appear in order, with massive bonuses for consecutive characters and word-boundary matches. Ideal for acronyms and abbreviations (e.g., `pwsh` matches `PowerShell`).
-- **Levenshtein (Edit Distance):** Mathematically calculates the distance between strings to catch human typos (e.g., `srever` matches `server`).
+- **Auto (Intent-Biased Max):** Detects user intent — typing the target (typo) vs. abbreviating — from signals like search/target length ratio and vowel-sparseness, then tilts the contest toward the better-suited algorithm. Uses `Math.Max` of the biased scores, so the recognized signal always survives intact.
+- **Subsequence (fzf-style):** Rewards characters that appear in order, with bonuses for consecutive characters and word-boundary matches. Ideal for acronyms and abbreviations (e.g., `pwsh` matches `PowerShell`).
+- **Jaro-Winkler:** Similarity score with a prefix boost — catches transpositions and typos cheaply (e.g., `teh` ≈ `the`, `srever` ≈ `server`) and rewards shared leading characters.
+- **Word-aware normalization:** Structural separators (`-`, `_`, `.`, `/`, `:`, `\`) and camelCase/PascalCase boundaries are converted to spaces before matching, so `XMLHttpRequest`, `my-server-01`, and `my server 01` all expose the same word structure to the algorithms. Fast paths also check a compact (space-removed) form so users who type identifiers without separators still hit prefix/substring shortcuts.
 - Returns an integer score scaled from 0 to 1000 (higher is better, 0 means no match, 1000 means exact match).
 
 **Parameters:**
 - `-SearchTerm`: (Required) The string you are searching for.
 - `-TargetText`: (Required) The string to evaluate against the search term.
-- `-Algorithm`: (Optional) Override the default `Auto` ensemble. Valid options: `Auto`, `Subsequence`, `Levenshtein`, `Legacy`.
+- `-Algorithm`: (Optional) Override the default `Auto` policy. Valid options: `Auto`, `Subsequence`, `JaroWinkler`, `Legacy`.
 
 **Example:**
 ```powershell
