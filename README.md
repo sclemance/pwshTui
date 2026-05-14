@@ -1,4 +1,4 @@
-# pwshui
+# pwshTui
 
 A portable, flexible suite of PowerShell 7.4+ functions designed to provide a clean and consistent console user experience across Linux, Windows, and macOS. 
 
@@ -38,7 +38,7 @@ A powerful interactive selector for arrays or complex objects.
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psd1
+Import-Module ./pwshTui.psd1
 
 $processes = Get-Process | Sort-Object Name
 # Start on the 25th process in the list
@@ -82,7 +82,7 @@ A formatted input prompt that enforces structure and restricts keystrokes as the
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psd1
+Import-Module ./pwshTui.psd1
 
 # Phone Number
 $phone = Read-MaskedInput -Mask "(###) ###-####" -Prompt "Enter Phone Number:" -Placeholder "_"
@@ -115,7 +115,7 @@ A free-form input field with live Regex validation. Ideal for variable-length bu
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psd1
+Import-Module ./pwshTui.psd1
 
 # IPv4 Address
 $ipv4Regex = '^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
@@ -153,7 +153,7 @@ A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psm1
+Import-Module ./pwshTui.psm1
 
 $menuData = @(
     @{ Label = "System"; Children = @(
@@ -209,7 +209,7 @@ A utility function for calculating the relevance score between a search term and
 
 **Example:**
 ```powershell
-Import-Module ./pwshui.psd1
+Import-Module ./pwshTui.psd1
 
 # Finds 'Server01' using a subsequence abbreviation
 $score1 = Measure-FuzzyMatch -SearchTerm "sv01" -TargetText "Server01"
@@ -236,5 +236,5 @@ All functions in this module share the following safety guarantees:
 
 ## Installation
 
-1. Copy the `pwshui` folder to one of the paths listed in your `$env:PSModulePath`.
-2. Run `Import-Module pwshui` in your script or console.
+1. Copy the `pwshTui` folder to one of the paths listed in your `$env:PSModulePath`.
+2. Run `Import-Module pwshTui` in your script or console.

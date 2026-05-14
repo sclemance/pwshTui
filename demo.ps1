@@ -1,5 +1,5 @@
-# Demo for pwshui
-Import-Module ./pwshui.psd1 -Force
+# Demo for pwshTui
+Import-Module ./pwshTui.psd1 -Force
 
 # --- Demo 1: Nested Menu ---
 Write-Host "--- Nested Menu Demo ---" -ForegroundColor Cyan

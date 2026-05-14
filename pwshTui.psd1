@@ -1,6 +1,6 @@
 @{
-    RootModule           = 'pwshui.psm1'
-    ModuleVersion        = '0.1.1'
+    RootModule           = 'pwshTui.psm1'
+    ModuleVersion        = '0.2.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
