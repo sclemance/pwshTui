@@ -1,3 +1,5 @@
+Set-StrictMode -Version Latest
+
 function Measure-FuzzyMatch {
     [CmdletBinding()]
     param(
@@ -44,7 +46,7 @@ function Measure-FuzzyMatch {
     if ($Algorithm -eq 'Legacy') {
         if ($tNorm -eq $sNorm) { return 1000 }
 
-        $inputWords = $sNorm -split ' ' | Where-Object { $_.Length -gt 2 }
+        $inputWords = @($sNorm -split ' ' | Where-Object { $_.Length -gt 2 })
         $score = 0
         $matchedWords = 0
 
@@ -229,10 +231,35 @@ function Write-UIBox {
 
     # ANSI Strip regex to calculate true visible length
     $ansiRegex = "\e\[[0-9;]*[a-zA-Z]"
-    
+
     function Get-VisibleLength ([string]$s) {
         if ([string]::IsNullOrEmpty($s)) { return 0 }
         return ($s -replace $ansiRegex, "").Length
+    }
+
+    # Truncate to N visible characters while preserving ANSI escape sequences inline.
+    # Used for the in-row truncation path; ANSI sequences don't count toward the
+    # visible width but are emitted as-is so styling is preserved.
+    function Get-VisibleSubstring ([string]$s, [int]$maxVisibleLen) {
+        if ($maxVisibleLen -le 0 -or [string]::IsNullOrEmpty($s)) { return "" }
+        $sb = [System.Text.StringBuilder]::new()
+        $visibleCount = 0
+        $i = 0
+        while ($i -lt $s.Length -and $visibleCount -lt $maxVisibleLen) {
+            if ($s[$i] -eq [char]27 -and ($i + 1) -lt $s.Length -and $s[$i + 1] -eq '[') {
+                # Copy the full CSI sequence: ESC [ <params> <final-byte>
+                $start = $i
+                $i += 2
+                while ($i -lt $s.Length -and ($s[$i] -match '[0-9;]')) { $i++ }
+                if ($i -lt $s.Length -and [char]::IsLetter($s[$i])) { $i++ }
+                [void]$sb.Append($s.Substring($start, $i - $start))
+            } else {
+                [void]$sb.Append($s[$i])
+                $visibleCount++
+                $i++
+            }
+        }
+        return $sb.ToString()
     }
 
     $allLines = @()
@@ -269,8 +296,10 @@ function Write-UIBox {
             $visibleLen = Get-VisibleLength $line
             $displayText = $line
             if ($visibleLen -gt $innerBoxWidth) {
-                if ($line -match $ansiRegex) { $displayText = $line } 
-                else { $displayText = $line.Substring(0, $innerBoxWidth - 3) + "..." }
+                # Truncate visible content to leave room for "..." then reset
+                # any open ANSI styling so the box border / padding renders clean.
+                $truncated = Get-VisibleSubstring $line ($innerBoxWidth - 3)
+                $displayText = "$truncated...`e[0m"
                 $visibleLen = $innerBoxWidth
             }
             $padding = " " * ($innerBoxWidth - $visibleLen)
