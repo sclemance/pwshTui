@@ -1,5 +1,20 @@
 Set-StrictMode -Version Latest
 
+# Cached once at module load. Drives module-wide rendering decisions:
+# interactive prompts fail fast with a clear error in non-VT hosts (Azure
+# Automation, ISE, redirected output) where [Console]::ReadKey can't work;
+# Show-Spinner falls back to plain bracketed log lines. Capability is per-
+# host and doesn't change after the module is imported, so caching is safe.
+$script:_SupportsVT = $false
+try { $script:_SupportsVT = [bool]$Host.UI.SupportsVirtualTerminal } catch {}
+
+function Assert-InteractiveHost {
+    param([string]$FunctionName)
+    if (-not $script:_SupportsVT) {
+        throw "$FunctionName requires a host with virtual-terminal support. Current host '$($Host.Name)' does not — likely Azure Automation, Windows PowerShell ISE, or redirected output. Run from an interactive console session (pwsh, Windows Terminal, VS Code integrated terminal, etc.)."
+    }
+}
+
 function Measure-FuzzyMatch {
     <#
     .SYNOPSIS
@@ -416,16 +431,20 @@ function Write-UIBox {
 function Get-PaginatedSelection {
     <#
     .SYNOPSIS
-        Interactive paginated list selector with optional live fuzzy search.
+        Interactive paginated list selector with optional live fuzzy search
+        and multi-select.
     .DESCRIPTION
         Renders a paginated list and returns the selected item, or $null on
         cancel. Supports keyboard navigation, page/selection wrap, an initial
         highlighted index, and (with -Searchable) live fuzzy-search filtering
-        powered by Measure-FuzzyMatch.
+        powered by Measure-FuzzyMatch. With -MultiSelect, Space toggles rows
+        and Enter returns an array of toggled items.
 
         Keys: Up/Down move within page, Left/Right change page, Enter selects,
         Esc cancels. In Searchable mode any printable character extends the
-        search buffer; Backspace deletes from it.
+        search buffer; Backspace deletes from it. In MultiSelect mode Space
+        toggles the current row's selection (preempting buffer extension if
+        Searchable is also on).
     .PARAMETER Items
         Required. Collection to choose from (strings or objects).
     .PARAMETER PageSize
@@ -447,8 +466,16 @@ function Get-PaginatedSelection {
     .PARAMETER SearchThreshold
         Minimum match score (0-1000) for an item to appear when searching.
         Default 100. Lower = more permissive.
+    .PARAMETER MultiSelect
+        Enable multi-selection. Space toggles the current row's selection
+        (independent of cursor position); Enter returns an array of selected
+        items in original input order. Selection state persists across search
+        filter changes. Esc still returns $null. Enter with no toggled items
+        returns an empty array (distinguishable from $null cancel).
     .OUTPUTS
-        The selected item, or $null if cancelled.
+        Without -MultiSelect: the selected item, or $null if cancelled.
+        With -MultiSelect: an array (possibly empty) of selected items in
+        original input order, or $null if cancelled.
     #>
     [CmdletBinding()]
     param(
@@ -486,8 +513,12 @@ function Get-PaginatedSelection {
         # Minimum Measure-FuzzyMatch score for an item to appear in filtered
         # results. Scores 0-1000; 100 hides obvious noise while keeping fuzzy
         # partial matches visible. Set lower to be more permissive.
-        [int]$SearchThreshold = 100
+        [int]$SearchThreshold = 100,
+
+        [switch]$MultiSelect
     )
+
+    Assert-InteractiveHost 'Get-PaginatedSelection'
 
     $itemList = @($Items)
     if ($itemList.Count -eq 0) {
@@ -499,6 +530,11 @@ function Get-PaginatedSelection {
     $filteredItems = $itemList
     $searchBuffer = ""
     $previousSearchBuffer = ""
+
+    # MultiSelect: HashSet keyed by item identity (reference equality for
+    # objects, value equality for strings). Persists across filter changes
+    # so a toggled item stays selected even when filtered off-screen.
+    $selectedSet = [System.Collections.Generic.HashSet[object]]::new()
 
     # Ensure InitialIndex is within bounds
     if ($InitialIndex -ge $itemList.Count) { $InitialIndex = $itemList.Count - 1 }
@@ -569,7 +605,12 @@ function Get-PaginatedSelection {
                     if ($DisplayProperty) { $displayText = $item.$DisplayProperty }
                     else { $displayText = $item.ToString() }
                     if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
-                    
+
+                    if ($MultiSelect) {
+                        $marker = if ($selectedSet.Contains($item)) { '[x] ' } else { '[ ] ' }
+                        $displayText = "$marker$displayText"
+                    }
+
                     $isRowSelected = ($i -eq $selectedIndex)
                     if ($isRowSelected) {
                         if ($NoColor) {
@@ -592,7 +633,11 @@ function Get-PaginatedSelection {
             
             $footerLines = [System.Collections.Generic.List[string]]::new()
             $footerLines.Add("← Prev page $pageNumDisplay   → Next page $pageNumDisplay")
-            $footerLines.Add("↑↓ Move $rangeDisplay   Enter Select    Esc Cancel")
+            if ($MultiSelect) {
+                $footerLines.Add("↑↓ Move $rangeDisplay   Space Toggle ($($selectedSet.Count) selected)   Enter Confirm   Esc Cancel")
+            } else {
+                $footerLines.Add("↑↓ Move $rangeDisplay   Enter Select    Esc Cancel")
+            }
             if ($Searchable) {
                 $footerLines.Add("Type to search   Backspace to delete")
             }
@@ -615,6 +660,18 @@ function Get-PaginatedSelection {
 
             # Key Input
             $key = [Console]::ReadKey($true)
+
+            if ($MultiSelect -and $key.Key -eq 'Spacebar') {
+                if ($currentPageItems.Count -gt 0) {
+                    $toggleItem = $currentPageItems[$selectedIndex]
+                    if ($selectedSet.Contains($toggleItem)) {
+                        [void]$selectedSet.Remove($toggleItem)
+                    } else {
+                        [void]$selectedSet.Add($toggleItem)
+                    }
+                }
+                continue
+            }
 
             if ($Searchable) {
                 $handledSearchKey = $false
@@ -688,7 +745,13 @@ function Get-PaginatedSelection {
                     }
                 }
                 'Enter' {
-                    if ($filteredItems.Count -gt 0) {
+                    if ($MultiSelect) {
+                        # Return selected items in original input order. Wrapped
+                        # in a single-element array via the unary comma so that
+                        # PowerShell preserves the array shape even when 0 or 1
+                        # items are selected.
+                        $result = ,@($itemList | Where-Object { $selectedSet.Contains($_) })
+                    } elseif ($filteredItems.Count -gt 0) {
                         $result = $filteredItems[$startIdx + $selectedIndex]
                     }
                     $running = $false
@@ -770,6 +833,8 @@ function Read-MaskedInput {
         
         [switch]$ReturnRaw
     )
+
+    Assert-InteractiveHost 'Read-MaskedInput'
 
     # '#' = Digit
     # 'a' = Letter
@@ -984,10 +1049,12 @@ function Read-ValidatedInput {
         [switch]$AllowEmpty
     )
 
+    Assert-InteractiveHost 'Read-ValidatedInput'
+
     $rawInput = [System.Collections.Generic.List[char]]::new()
     $cursor = 0
     $running = $true
-    
+
     # Track original cursor state
     $originalCursorVisible = $true
     try {
@@ -1084,6 +1151,267 @@ function Read-ValidatedInput {
     return $finalStr
 }
 
+function Read-Confirmation {
+    <#
+    .SYNOPSIS
+        Prompt for a yes/no answer with single-key or arrow-key input.
+    .DESCRIPTION
+        Renders the question with two buttons (Yes / No), one highlighted as
+        the default. Accepts a single Y or N keystroke for an immediate
+        answer, or Left / Right / Tab to move the highlight and Enter to
+        confirm the current selection. Esc cancels.
+    .PARAMETER Question
+        Required. The yes/no question to display.
+    .PARAMETER Default
+        Which button is highlighted on open and chosen if Enter is pressed
+        without first moving. 'Yes' or 'No'. Default 'No'.
+    .EXAMPLE
+        PS> Read-Confirmation -Question 'Delete the file?' -Default No
+        Renders: Delete the file?  Yes  [No]
+        Returns $true for Yes, $false for No.
+    .OUTPUTS
+        [bool] $true for Yes, $false for No, or $null if cancelled.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Question,
+
+        [Parameter(Position = 1)]
+        [ValidateSet('Yes', 'No')]
+        [string]$Default = 'No'
+    )
+
+    Assert-InteractiveHost 'Read-Confirmation'
+
+    # 0 = Yes, 1 = No
+    $selected = if ($Default -eq 'Yes') { 0 } else { 1 }
+    $running = $true
+    $result = $null
+
+    # Track original cursor state
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+
+    Write-Host "`e[?25l" -NoNewline # Hide real cursor
+
+    try {
+        while ($running) {
+            Write-Host "`r$Question " -NoNewline -ForegroundColor Cyan
+
+            $yesText = ' Yes '
+            $noText  = ' No '
+            if ($selected -eq 0) {
+                Write-Host $yesText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                Write-Host '  ' -NoNewline
+                Write-Host $noText -NoNewline
+            } else {
+                Write-Host $yesText -NoNewline
+                Write-Host '  ' -NoNewline
+                Write-Host $noText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+            }
+            Write-Host "`e[K" -NoNewline # Clear to end of line
+
+            $key = [Console]::ReadKey($true)
+
+            if ($key.Key -eq 'LeftArrow')  { $selected = 0 }
+            elseif ($key.Key -eq 'RightArrow') { $selected = 1 }
+            elseif ($key.Key -eq 'Tab')    { $selected = 1 - $selected }
+            elseif ($key.Key -eq 'Enter')  { $result = ($selected -eq 0); $running = $false }
+            elseif ($key.Key -eq 'Escape') { $result = $null; $running = $false }
+            else {
+                $c = [char]::ToLower($key.KeyChar)
+                if ($c -eq 'y')     { $result = $true;  $running = $false }
+                elseif ($c -eq 'n') { $result = $false; $running = $false }
+            }
+        }
+
+        $finalText = if ($result -eq $true) { 'Yes' } elseif ($result -eq $false) { 'No' } else { '(cancelled)' }
+        Write-Host "`r$Question $finalText`e[K"
+    } finally {
+        if ($originalCursorVisible) {
+            Write-Host "`e[?25h" -NoNewline
+        }
+        Write-Host ""
+    }
+
+    return $result
+}
+
+function Show-Spinner {
+    <#
+    .SYNOPSIS
+        Run a scriptblock with a live animated spinner.
+    .DESCRIPTION
+        Renders an animated spinner glyph + activity text on a single line
+        while the scriptblock executes, then clears the line and emits the
+        scriptblock's output to the pipeline.
+
+        The spinner runs on a background runspace; the scriptblock runs on
+        the foreground thread in its defining scope, so closures over
+        caller-local variables work without -ArgumentList or $using:.
+
+        Caveat: Write-Host output from the scriptblock will interleave with
+        the spinner line. Same limitation as Write-Progress. Use the
+        spinner for opaque "wait for this to finish" work.
+    .PARAMETER Activity
+        Required. Text shown after the spinner glyph.
+    .PARAMETER ScriptBlock
+        Required. Work to execute. Runs on the foreground thread in the
+        caller's scope — closures, imported modules, and $PSCmdlet
+        references all work as if you called the scriptblock directly.
+    .PARAMETER Style
+        Spinner glyph style:
+          Braille    (default) — `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` at ~80ms
+          Ascii                — `| / - \`        at ~120ms (universal)
+          HalfBlocks           — `▖▘▝▗`           at ~120ms
+          Dots                 — `.`, `..`, ...   at ~250ms (text-only)
+    .PARAMETER NoColor
+        Disable ANSI styling on the spinner glyph.
+    .PARAMETER ShowTimer
+        Append a live elapsed-time counter to the activity line. Format
+        narrows as time grows: `(1.2s)` under a minute, `(2m 34s)` under
+        an hour, `(1h 23m)` beyond.
+    .EXAMPLE
+        PS> $baseUrl = 'https://api.example.com'
+        PS> $users = Show-Spinner -Activity "Fetching users..." -ScriptBlock {
+                Invoke-RestMethod "$baseUrl/users"
+            }
+        Closure over $baseUrl from caller scope is preserved.
+    .EXAMPLE
+        PS> Show-Spinner -Activity "Backing up..." -ShowTimer -ScriptBlock {
+                Compress-Archive -Path C:\Data -DestinationPath backup.zip
+            }
+        Live timer reassures the user that long ops aren't hung.
+    .OUTPUTS
+        Whatever the scriptblock returned.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Activity,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [scriptblock]$ScriptBlock,
+
+        [Parameter(Position = 2)]
+        [ValidateSet('Braille', 'Ascii', 'HalfBlocks', 'Dots')]
+        [string]$Style = 'Braille',
+
+        [switch]$NoColor,
+
+        [switch]$ShowTimer
+    )
+
+    # Non-VT fallback (Azure Automation, ISE, redirected output): no animation,
+    # just bracket the work with plain log lines. Elapsed always included on
+    # the "done" line — cheap to capture and far more useful in logs than at
+    # an interactive prompt.
+    if (-not $script:_SupportsVT) {
+        Write-Host "[ $Activity ]"
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            & $ScriptBlock
+        } finally {
+            $sw.Stop()
+            $t = $sw.Elapsed
+            $elapsed = if ($t.TotalMinutes -lt 1) {
+                '{0:F1}s' -f $t.TotalSeconds
+            } elseif ($t.TotalHours -lt 1) {
+                '{0}m {1}s' -f $t.Minutes, $t.Seconds
+            } else {
+                '{0}h {1}m' -f [int]$t.TotalHours, $t.Minutes
+            }
+            Write-Host "[ $Activity done in $elapsed ]"
+        }
+        return
+    }
+
+    # Glyph table + cadence per style. Cadence empirically tuned to read as
+    # "alive" without flicker on fast frames.
+    $config = switch ($Style) {
+        'Braille'    { @{ Frames = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'); Ms = 80 } }
+        'Ascii'      { @{ Frames = @('|','/','-','\');                            Ms = 120 } }
+        'HalfBlocks' { @{ Frames = @('▖','▘','▝','▗');                            Ms = 120 } }
+        'Dots'       { @{ Frames = @('.   ','..  ','... ','....');                Ms = 250 } }
+    }
+
+    # Track original cursor state so we restore exactly what was there.
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+
+    Write-Host "`e[?25l" -NoNewline # hide cursor
+
+    # ManualResetEventSlim lets the foreground signal "stop ticking" cheaply,
+    # and makes the background sleep interruptible — Stop returns immediately
+    # rather than waiting out the cadence.
+    $stopSignal = [System.Threading.ManualResetEventSlim]::new($false)
+    # Stopwatch started just before the runspace launches so the displayed
+    # elapsed time matches the user's perceived wait — not including our
+    # own setup overhead.
+    $stopwatch = if ($ShowTimer) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
+    $tickPS = [powershell]::Create()
+    [void]$tickPS.AddScript({
+        param($frames, $intervalMs, $activity, $stop, $useColor, $sw)
+        $i = 0
+        while (-not $stop.IsSet) {
+            $glyph = $frames[$i % $frames.Count]
+            $suffix = ''
+            if ($null -ne $sw) {
+                $t = $sw.Elapsed
+                $suffix = if ($t.TotalMinutes -lt 1) {
+                    ' ({0:F1}s)' -f $t.TotalSeconds
+                } elseif ($t.TotalHours -lt 1) {
+                    ' ({0}m {1}s)' -f $t.Minutes, $t.Seconds
+                } else {
+                    ' ({0}h {1}m)' -f [int]$t.TotalHours, $t.Minutes
+                }
+            }
+            $line = if ($useColor) {
+                "`r`e[36m$glyph`e[0m $activity$suffix`e[K"
+            } else {
+                "`r$glyph $activity$suffix`e[K"
+            }
+            [Console]::Write($line)
+            [void]$stop.Wait($intervalMs)
+            $i++
+        }
+        [Console]::Write("`r`e[K")
+    })
+    [void]$tickPS.AddArgument($config.Frames)
+    [void]$tickPS.AddArgument($config.Ms)
+    [void]$tickPS.AddArgument($Activity)
+    [void]$tickPS.AddArgument($stopSignal)
+    [void]$tickPS.AddArgument(-not $NoColor.IsPresent)
+    [void]$tickPS.AddArgument($stopwatch)
+
+    $handle = $null
+    try {
+        $handle = $tickPS.BeginInvoke()
+        # Foreground execution preserves the scriptblock's defining scope —
+        # closures, $PSCmdlet, etc. all behave as if called inline.
+        & $ScriptBlock
+    } finally {
+        $stopSignal.Set()
+        if ($null -ne $handle) {
+            try { [void]$tickPS.EndInvoke($handle) } catch {}
+        }
+        $tickPS.Dispose()
+        $stopSignal.Dispose()
+        if ($originalCursorVisible) {
+            Write-Host "`e[?25h" -NoNewline # restore cursor
+        }
+    }
+}
+
 function Invoke-NestedMenu {
     <#
     .SYNOPSIS
@@ -1132,6 +1460,8 @@ function Invoke-NestedMenu {
         [int]$Y = -1,
         [switch]$AltScreen
     )
+
+    Assert-InteractiveHost 'Invoke-NestedMenu'
 
     # Helper to recursively normalize items
     function ConvertTo-MenuItem ($Item) {
@@ -1378,4 +1708,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Invoke-NestedMenu, Measure-FuzzyMatch
+Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Read-Confirmation, Show-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch

@@ -17,6 +17,7 @@ A powerful interactive selector for arrays or complex objects.
 - Clean display logic that prevents artifacts on the screen when navigating between pages of varying lengths.
 - **Automatic Truncation:** Long lines are automatically truncated to fit the terminal width, preventing layout breakage and cursor sync issues.
 - **Live Search Filtering:** When enabled, typing filters the list dynamically using a robust fuzzy-matching algorithm.
+- **Multi-Select Mode:** When `-MultiSelect` is enabled, `Space` toggles the current row's selection (with an `[x]`/`[ ]` marker), and `Enter` returns an array of toggled items in original input order. Selection state persists across search filter changes. In `-Searchable -MultiSelect` mode, `Space` toggles instead of extending the search buffer (matches fzf `-m` behavior).
 
 **Parameters:**
 - `-Items`: (Required) The array of items to select from.
@@ -28,6 +29,7 @@ A powerful interactive selector for arrays or complex objects.
 - `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
 - `-Searchable`: (Switch) Enables live fuzzy-search filtering. When active, alpha-numeric key presses will update a search buffer and dynamically filter the displayed list.
 - `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `JaroWinkler`, `Legacy`). Default: `Auto`.
+- `-MultiSelect`: (Switch) Enables multi-selection. `Space` toggles the current row; `Enter` returns an array of selected items (possibly empty) in original input order. `Esc` still returns `$null`, so callers can distinguish cancel (`$null`) from "confirmed nothing" (`@()`).
 
 **Shortcuts:**
 - `↑` / `↓`: Move selection within the current page.
@@ -35,6 +37,7 @@ A powerful interactive selector for arrays or complex objects.
 - `Enter`: Confirm selection.
 - `Esc`: Cancel selection (returns `$null`).
 - `Backspace` / `Alpha-numeric keys`: (When `-Searchable` is used) Modifies the search query to filter the list.
+- `Space`: (When `-MultiSelect` is used) Toggles the current row's selection.
 
 **Example:**
 ```powershell
@@ -128,7 +131,37 @@ $email = Read-ValidatedInput -Prompt "Enter Email:" -Pattern $emailRegex
 
 ---
 
-### 4. `Invoke-NestedMenu`
+### 4. `Read-Confirmation`
+A dedicated Yes/No prompt with single-key answer or arrow-key navigation.
+
+**Features:**
+- Single-key `Y` or `N` for an immediate answer (case-insensitive).
+- Arrow / `Tab` navigation between buttons for users who prefer to confirm with `Enter`.
+- Configurable default highlight — `-Default No` is the safer choice for destructive prompts.
+- Returns `$true` / `$false` for the answer, or `$null` on cancel — so `if (Read-Confirmation ...)` only fires on an explicit Yes.
+
+**Parameters:**
+- `-Question`: (Required) The yes/no question displayed before the buttons.
+- `-Default`: Which button (`Yes` or `No`) is highlighted on open and chosen if `Enter` is pressed without moving. Default: `No`.
+
+**Shortcuts:**
+- `Y` / `N`: Immediate Yes/No answer (case-insensitive).
+- `←` / `→` / `Tab`: Move the highlight between buttons.
+- `Enter`: Confirm the currently highlighted button.
+- `Esc`: Cancel (returns `$null`, distinguishable from a `No` answer).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+if (Read-Confirmation -Question "Delete the file?" -Default No) {
+    Remove-Item ./important.txt
+}
+```
+
+---
+
+### 5. `Invoke-NestedMenu`
 A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Features:**
@@ -169,7 +202,7 @@ $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -Initia
 
 ---
 
-### 5. `Write-UIBox`
+### 6. `Write-UIBox`
 The underlying layout engine used by the interactive functions, also available for standalone use.
 
 **Features:**
@@ -192,7 +225,7 @@ The underlying layout engine used by the interactive functions, also available f
 Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 ---
 
-### 6. `Measure-FuzzyMatch`
+### 7. `Measure-FuzzyMatch`
 A utility function for calculating the relevance score between a search term and a target string. It uses a cross-platform, ensemble fuzzy-matching approach written entirely in pure PowerShell, ensuring it works securely in locked-down environments like Azure Automation without compiling C# code.
 
 **Features:**
@@ -218,6 +251,38 @@ $score1 = Measure-FuzzyMatch -SearchTerm "sv01" -TargetText "Server01"
 $score2 = Measure-FuzzyMatch -SearchTerm "storge" -TargetText "Storage"
 ```
 
+---
+
+### 8. `Show-Spinner`
+Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" UX behind one call.
+
+**Features:**
+- **Closures Just Work:** the user's scriptblock runs on the foreground thread in its defining scope — `$baseUrl`, `$connectionString`, and any other caller-local variables are visible without `$using:` or `-ArgumentList`. Only the spinner glyph rendering is pushed to a background runspace.
+- **Four glyph styles:** `Braille` (default, smooth 10-frame), `Ascii` (universal `| / - \`), `HalfBlocks` (Unicode corners), `Dots` (text-only `.`, `..`, `...`, `....`).
+- **Optional live timer:** `-ShowTimer` appends an elapsed-time counter that narrows format with scale: `(3.2s)` under a minute, `(2m 34s)` under an hour, `(1h 23m)` beyond.
+- **Azure Automation / non-VT fallback:** detects hosts without virtual-terminal support and emits plain bracket log lines (`[ Activity ]` / `[ Activity done in 3.2s ]`) instead of garbled ANSI animation. Scriptblock execution, return values, and exception propagation are identical across both modes — only the render layer changes.
+- **Safe cleanup:** exceptions from the scriptblock propagate naturally through the `finally` block; the runspace, signal handle, and cursor visibility are always restored.
+
+**Parameters:**
+- `-Activity`: (Required) Text shown after the spinner glyph.
+- `-ScriptBlock`: (Required) The work to execute. Runs on the foreground thread in the caller's scope.
+- `-Style`: Glyph style — `Braille` (default), `Ascii`, `HalfBlocks`, `Dots`.
+- `-ShowTimer`: (Switch) Append a live elapsed-time counter to the activity line.
+- `-NoColor`: (Switch) Disable ANSI styling on the spinner glyph.
+
+**Caveat:** `Write-Host` output from the scriptblock will interleave with the spinner line (same limitation as `Write-Progress`). Use `Show-Spinner` for opaque "wait for this" work; do logging/reporting before or after.
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+$baseUrl = 'https://api.example.com'
+$users = Show-Spinner -Activity "Fetching users..." -ShowTimer -ScriptBlock {
+    Invoke-RestMethod "$baseUrl/users"   # closure over $baseUrl works
+}
+# $users contains the response; spinner line cleared on return.
+```
+
 ## Global Layout Parameters
 
 All interactive functions (`Get-PaginatedSelection`, `Invoke-NestedMenu`) now support the following layout parameters:
@@ -233,6 +298,7 @@ All functions in this module share the following safety guarantees:
 - **Stateful Cursor Management:** The real terminal cursor is automatically hidden to prevent flickering and visual tearing while drawing menus or input fields. The module captures the state of your terminal's cursor *before* running, and guarantees it is restored to that exact state when it exits.
 - **Clean Prompt Fallback:** If you cancel an input or menu (via `Esc` or `CTRL+C`), the module automatically emits a newline to ensure your subsequent shell prompt drops to a clean, fresh line, avoiding trailing artifacts.
 - **CTRL+C Safe:** All rendering loops are wrapped in `try/finally` blocks. If a user forcefully terminates the script using `CTRL+C`, the cursor state and terminal formatting are guaranteed to be safely restored before the process exits.
+- **Host Compatibility:** Virtual-terminal capability is detected once at module import (`$Host.UI.SupportsVirtualTerminal`). Interactive functions (`Get-PaginatedSelection`, `Read-MaskedInput`, `Read-ValidatedInput`, `Read-Confirmation`, `Invoke-NestedMenu`) fail fast with a clear error naming the function and current host when invoked from non-VT contexts (Azure Automation, Windows PowerShell ISE, redirected output) — they need `[Console]::ReadKey` which can't be polyfilled. `Show-Spinner` falls back to plain bracket log lines in the same contexts so scripts that wrap work in a spinner still run cleanly under automation.
 
 ## Installation
 
@@ -243,9 +309,6 @@ All functions in this module share the following safety guarantees:
 
 pwshTui covers the most common script-level prompts well — single-choice selection, masked / validated input, and nested menus. The following are on the table as the library grows, listed roughly by scope:
 
-- **`Read-Confirmation`** — dedicated Yes/No prompt with single-key answer.
-- **`Get-PaginatedSelection -MultiSelect`** — space-to-toggle, returns the chosen items as an array.
-- **`Show-Spinner` / progress wrapper** — animated indicator while a long-running scriptblock executes.
 - **Terminal resize handling** — recalculate layout on `WindowWidth` / `WindowHeight` changes.
 - **`Get-PaginatedSelection -Columns`** — auto-aligned tabular display for picking from object collections.
 - **`Read-Form`** — multi-field composition with Tab navigation, shared layout, and per-field validation.
