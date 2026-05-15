@@ -279,7 +279,7 @@ Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" 
 - `-NoColor`: (Switch) Disable ANSI styling on the spinner glyph.
 - `-Ascii`: (Switch) Forces `-Style Ascii` regardless of any `-Style` argument. Single consistent fallback switch across the module. See [Rendering Modes](#rendering-modes).
 
-**Caveat:** `Write-Host` output from the scriptblock will interleave with the spinner line (same limitation as `Write-Progress`). Use `Show-Spinner` for opaque "wait for this" work; do logging/reporting before or after.
+**Clean in-scriptblock output:** plain `Write-Host` from inside the scriptblock still tears the spinner row (same limitation as `Write-Progress`). Use [`Write-Spinner`](#9-write-spinner) as the opt-in clean channel — it buffers messages and the ticker flushes them above the animated glyph so they persist in scrollback.
 
 **Example:**
 ```powershell
@@ -290,6 +290,33 @@ $users = Show-Spinner -Activity "Fetching users..." -ShowTimer -ScriptBlock {
     Invoke-RestMethod "$baseUrl/users"   # closure over $baseUrl works
 }
 # $users contains the response; spinner line cleared on return.
+```
+
+---
+
+### 9. `Write-Spinner`
+Emit a log line that persists above an active spinner. The opt-in clean channel for any visible text the scriptblock needs to emit while a spinner is running — solves the otherwise-corrupting interleave with plain `Write-Host`.
+
+**Features:**
+- **Persists above the glyph:** when called from inside a `Show-Spinner` `-ScriptBlock` on a VT host, the message is enqueued and the ticker drains it on its next frame — the spinner row is cleared, the message is written with a trailing newline so it scrolls up and persists, and the spinner is redrawn on the now-empty row.
+- **Drop-in safe:** outside an active spinner — or in non-VT contexts where there's no animated row to conflict with — the call passes through to `Write-Host`. So helpers that use `Write-Spinner` stay usable whether or not their caller wraps them in a spinner.
+- **Color preserved:** `-ForegroundColor` is honored in both paths. For the VT-spinner path the message is ANSI-wrapped with the matching SGR code before being enqueued, so the persisted line keeps its color.
+- **Scope is visible output only:** this is specifically for `Write-Host`-style text (the stream that would tear the spinner). `Write-Verbose`, `Write-Warning`, `Write-Error`, and pipeline output are unaffected and continue to use their own streams.
+
+**Parameters:**
+- `-Message`: (Required) Text to emit. Pass a single string; embedded newlines render as multiple lines, all of which scroll above the spinner.
+- `-ForegroundColor`: Optional `[System.ConsoleColor]`. Suppressed under `$env:NO_COLOR`.
+
+**Example:**
+```powershell
+Show-Spinner -Activity "Indexing" -ShowTimer -ScriptBlock {
+    foreach ($file in $files) {
+        Process $file
+        Write-Spinner "Indexed $($file.Name)" -ForegroundColor DarkGray
+    }
+}
+# Each "Indexed ..." line scrolls above the spinning glyph and is preserved
+# in scrollback when the spinner finishes.
 ```
 
 ## Global Layout Parameters

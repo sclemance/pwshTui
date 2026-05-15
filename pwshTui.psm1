@@ -15,6 +15,27 @@ try { $script:_SupportsVT = [bool]$Host.UI.SupportsVirtualTerminal } catch {}
 $script:_AsciiMode = [bool]$env:PWSHTUI_ASCII
 $script:_NoColor   = [bool]$env:NO_COLOR
 
+# Spinner output channel. Write-Spinner enqueues to this buffer when a
+# spinner is active on a VT host; the ticker drains the queue each frame,
+# writing each entry above the spinner row so log lines persist while the
+# glyph keeps animating. Outside an active spinner — or in non-VT contexts
+# where there's no glyph to conflict with — Write-Spinner passes through
+# to Write-Host. ConcurrentQueue handles the producer/consumer split between
+# the foreground scriptblock and the background ticker runspace.
+$script:_SpinnerActive = $false
+$script:_SpinnerBuffer = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+
+# ConsoleColor -> SGR foreground code. Write-Spinner pre-wraps the message
+# with the matching ANSI escape before enqueueing so the ticker — which
+# writes raw and has no Write-Host -ForegroundColor available — can just
+# blit each entry as-is and keep the user's color.
+$script:_ConsoleColorAnsi = @{
+    'Black'       = '30'; 'DarkBlue'    = '34'; 'DarkGreen'   = '32'; 'DarkCyan'    = '36'
+    'DarkRed'     = '31'; 'DarkMagenta' = '35'; 'DarkYellow'  = '33'; 'Gray'        = '37'
+    'DarkGray'    = '90'; 'Blue'        = '94'; 'Green'       = '92'; 'Cyan'        = '96'
+    'Red'         = '91'; 'Magenta'     = '95'; 'Yellow'      = '93'; 'White'       = '97'
+}
+
 # Glyph tables. Unicode is the rich default; ASCII swaps cover restricted
 # fonts (legacy Windows code pages, ancient terminals, log scrapes). The
 # Ascii table is chosen so the ASCII version of each glyph reads as the same
@@ -1527,9 +1548,11 @@ function Show-Spinner {
     if (-not $script:_SupportsVT) {
         Write-Host "[ $Activity ]"
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $script:_SpinnerActive = $true
         try {
             & $ScriptBlock
         } finally {
+            $script:_SpinnerActive = $false
             $sw.Stop()
             $t = $sw.Elapsed
             $elapsed = if ($t.TotalMinutes -lt 1) {
@@ -1575,9 +1598,17 @@ function Show-Spinner {
     $stopwatch = if ($ShowTimer) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
     $tickPS = [powershell]::Create()
     [void]$tickPS.AddScript({
-        param($frames, $intervalMs, $activity, $stop, $useColor, $sw)
+        param($frames, $intervalMs, $activity, $stop, $useColor, $sw, $buffer)
         $i = 0
         while (-not $stop.IsSet) {
+            # Drain pending log lines from Write-Spinner: clear the
+            # spinner row, emit each entry on its own line (with newline so
+            # it scrolls up and persists), then fall through to redraw the
+            # glyph on the now-empty current row.
+            $msg = $null
+            while ($buffer.TryDequeue([ref]$msg)) {
+                [Console]::Write("`r`e[K$msg`n")
+            }
             $glyph = $frames[$i % $frames.Count]
             $suffix = ''
             if ($null -ne $sw) {
@@ -1599,6 +1630,12 @@ function Show-Spinner {
             [void]$stop.Wait($intervalMs)
             $i++
         }
+        # Final drain: catch anything enqueued between the last tick and the
+        # stop signal so no log line is lost when the row is cleared.
+        $msg = $null
+        while ($buffer.TryDequeue([ref]$msg)) {
+            [Console]::Write("`r`e[K$msg`n")
+        }
         [Console]::Write("`r`e[K")
     })
     [void]$tickPS.AddArgument($config.Frames)
@@ -1607,7 +1644,9 @@ function Show-Spinner {
     [void]$tickPS.AddArgument($stopSignal)
     [void]$tickPS.AddArgument(-not $noColorOn)
     [void]$tickPS.AddArgument($stopwatch)
+    [void]$tickPS.AddArgument($script:_SpinnerBuffer)
 
+    $script:_SpinnerActive = $true
     $handle = $null
     try {
         $handle = $tickPS.BeginInvoke()
@@ -1621,8 +1660,81 @@ function Show-Spinner {
         }
         $tickPS.Dispose()
         $stopSignal.Dispose()
+        $script:_SpinnerActive = $false
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline # restore cursor
+        }
+    }
+}
+
+function Write-Spinner {
+    <#
+    .SYNOPSIS
+        Emit a log line that persists above an active spinner.
+    .DESCRIPTION
+        Solves the Show-Spinner caveat that plain Write-Host output from
+        inside a -ScriptBlock visually corrupts the animated glyph row.
+        Use Write-Spinner as the opt-in clean channel for any visible
+        text the scriptblock needs to emit while a spinner is running.
+
+        On a VT-capable host with an active Show-Spinner, the message is
+        enqueued and the spinner's background ticker drains it on its next
+        frame: the spinner row is cleared, the message is written with a
+        trailing newline so it scrolls up and persists, and the spinner is
+        redrawn on the now-empty current row.
+
+        Outside an active spinner — or in non-VT contexts where the
+        spinner has no animated row to conflict with — the call passes
+        through to Write-Host. So a helper that uses Write-Spinner
+        stays drop-in usable whether or not its caller wraps it in a
+        spinner.
+
+        Scope: this is specifically for Write-Host-style visible output
+        (the stream that would otherwise tear the spinner). Write-Verbose,
+        Write-Warning, Write-Error, and pipeline output are unaffected
+        and continue to use their own streams.
+    .PARAMETER Message
+        Required. Text to emit. Pass a single string; embedded `\n` will
+        render as multiple lines, all of which scroll above the spinner.
+    .PARAMETER ForegroundColor
+        Optional. Standard System.ConsoleColor for the message. When
+        enqueued for a VT spinner, the message is ANSI-wrapped with the
+        matching SGR foreground code so the persisted line keeps its
+        color. Suppressed under $env:NO_COLOR.
+    .EXAMPLE
+        PS> Show-Spinner -Activity "Indexing" -ShowTimer -ScriptBlock {
+                foreach ($file in $files) {
+                    Process $file
+                    Write-Spinner "Indexed $($file.Name)" -ForegroundColor DarkGray
+                }
+            }
+        Each "Indexed ..." line scrolls above the spinning glyph and is
+        preserved in scrollback when the spinner finishes.
+    .OUTPUTS
+        None.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Message,
+
+        [System.ConsoleColor]$ForegroundColor
+    )
+
+    if ($script:_SpinnerActive -and $script:_SupportsVT) {
+        $payload = if ($PSBoundParameters.ContainsKey('ForegroundColor') -and -not $script:_NoColor) {
+            $code = $script:_ConsoleColorAnsi[$ForegroundColor.ToString()]
+            "`e[${code}m$Message`e[0m"
+        } else {
+            $Message
+        }
+        [void]$script:_SpinnerBuffer.Enqueue($payload)
+    } else {
+        if ($PSBoundParameters.ContainsKey('ForegroundColor')) {
+            Write-Host $Message -ForegroundColor $ForegroundColor
+        } else {
+            Write-Host $Message
         }
     }
 }
@@ -1945,4 +2057,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Read-Confirmation, Show-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch
+Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Read-Confirmation, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch
