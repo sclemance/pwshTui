@@ -8,6 +8,87 @@ Set-StrictMode -Version Latest
 $script:_SupportsVT = $false
 try { $script:_SupportsVT = [bool]$Host.UI.SupportsVirtualTerminal } catch {}
 
+# User preferences via environment variables, resolved once at import.
+# Per-call -Ascii / -NoColor switches override these on a per-function basis;
+# the resolution rule across the module is: explicit switch > env var > rich
+# default. NO_COLOR is the de-facto standard from https://no-color.org.
+$script:_AsciiMode = [bool]$env:PWSHTUI_ASCII
+$script:_NoColor   = [bool]$env:NO_COLOR
+
+# Glyph tables. Unicode is the rich default; ASCII swaps cover restricted
+# fonts (legacy Windows code pages, ancient terminals, log scrapes). The
+# Ascii table is chosen so the ASCII version of each glyph reads as the same
+# semantic affordance — `->` still feels like a right arrow, `+` still feels
+# like a corner/junction, `>` still suggests "drill in."
+$script:_GlyphsUnicode = @{
+    BorderH        = '─'; BorderV    = '│'
+    BorderTL       = '┌'; BorderTR   = '┐'
+    BorderBL       = '└'; BorderBR   = '┘'
+    BorderTeeL     = '├'; BorderTeeR = '┤'
+    ArrowLeft      = '←'; ArrowRight = '→'
+    ArrowsUpDown   = '↑↓'
+    ChildIndicator = '►'
+    RadioOn        = '●'; RadioOff   = '○'
+}
+$script:_GlyphsAscii = @{
+    BorderH        = '-'; BorderV    = '|'
+    BorderTL       = '+'; BorderTR   = '+'
+    BorderBL       = '+'; BorderBR   = '+'
+    BorderTeeL     = '+'; BorderTeeR = '+'
+    ArrowLeft      = '<-'; ArrowRight = '->'
+    ArrowsUpDown   = '^v'
+    ChildIndicator = '>'
+    RadioOn        = '[x]'; RadioOff = '[ ]'
+}
+
+function Get-Glyphs([bool]$Ascii) {
+    if ($Ascii) { $script:_GlyphsAscii } else { $script:_GlyphsUnicode }
+}
+
+# Localized UI strings. Defaults below are en-US and stay as a complete
+# fallback set so the module renders correctly even if no resource file
+# matches. Import-LocalizedData walks the culture hierarchy automatically
+# (e.g. fr-CA → fr-FR → invariant) and overlays any keys it finds. Set
+# $PSUICulture before importing the module to force a specific locale;
+# users wanting to add a translation just drop a new <culture>/
+# pwshTui.Strings.psd1 alongside the existing ones.
+$script:_Strings = @{
+    Footer_Move      = 'Move'
+    Footer_Select    = 'Select'
+    Footer_Confirm   = 'Confirm'
+    Footer_Cancel    = 'Cancel'
+    Footer_Exit      = 'Exit'
+    Footer_Toggle    = 'Toggle'
+    Footer_Expand    = 'Expand'
+    Footer_Back      = 'Back'
+    Footer_PrevPage  = 'Prev page'
+    Footer_NextPage  = 'Next page'
+    Footer_Selected  = 'selected'
+    Footer_Search    = 'Search'
+    Status_NoMatches = '(No matches found)'
+    Status_NoItems   = 'No items to select.'
+    Status_Cancelled = '(cancelled)'
+    Status_DoneIn    = 'done in'
+}
+try {
+    $loaded = $null
+    Import-LocalizedData -BindingVariable 'loaded' -BaseDirectory $PSScriptRoot -FileName 'pwshTui.Strings.psd1' -ErrorAction Stop
+    if ($loaded) {
+        foreach ($k in $loaded.Keys) { $script:_Strings[$k] = $loaded[$k] }
+    }
+} catch {
+    # No matching resource file — defaults already populated.
+}
+
+function Test-ControlC([System.ConsoleKeyInfo]$Key) {
+    # True when the keypress is Ctrl+C. Interactive functions set
+    # [Console]::TreatControlCAsInput = $true so Ctrl+C arrives as a regular
+    # key instead of being captured by the PowerShell engine — that lets the
+    # function react immediately rather than waiting for the next keystroke
+    # to unblock ReadKey. Original setting is restored in finally.
+    return ($Key.Key -eq 'C' -and ($Key.Modifiers -band [ConsoleModifiers]::Control))
+}
+
 function Assert-InteractiveHost {
     param([string]$FunctionName)
     if (-not $script:_SupportsVT) {
@@ -334,6 +415,17 @@ function Write-UIBox {
         Absolute row to render at. -1 = current cursor position.
     .PARAMETER AltScreen
         Reserved; the caller controls alt-screen mode.
+    .PARAMETER SectionRules
+        Draw a horizontal rule between sections (header→body, body→footer)
+        when not in -Border mode. In -Border mode the existing connector
+        rules are used instead; this switch is a no-op there. Useful for
+        borderless layouts that still want visual segregation between the
+        title, content, and key-hint footer.
+    .PARAMETER Ascii
+        Swap Unicode box-drawing characters for ASCII equivalents
+        (`─┌┐└┘├┤│` → `-+++++|`). Module-wide default reads `$env:PWSHTUI_ASCII`;
+        the per-call switch overrides. Useful in restricted terminals,
+        legacy code pages, or fonts missing box-drawing glyphs.
     .OUTPUTS
         [int] number of lines rendered.
     #>
@@ -348,8 +440,14 @@ function Write-UIBox {
         [int]$MaxWidth = 0,
         [int]$X = -1,
         [int]$Y = -1,
-        [switch]$AltScreen
+        [switch]$AltScreen,
+        [switch]$SectionRules,
+        [switch]$Ascii
     )
+
+    # Resolve effective ASCII mode: explicit switch > $env:PWSHTUI_ASCII > rich.
+    $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+    $g = Get-Glyphs $asciiOn
 
     $allLines = @()
     if ($Header) { $allLines += $Header }
@@ -375,9 +473,10 @@ function Write-UIBox {
 
     # Build the final frame lines in an array first to avoid scope/logic errors
     $frame = [System.Collections.Generic.List[string]]::new()
-    $horiz = "─" * ($innerBoxWidth + 2)
+    $horiz     = $g.BorderH * ($innerBoxWidth + 2)
+    $plainRule = $g.BorderH * $innerBoxWidth
 
-    if ($Border) { $frame.Add("┌$horiz┐") }
+    if ($Border) { $frame.Add("$($g.BorderTL)$horiz$($g.BorderTR)") }
 
     $addSectionLines = {
         param([string[]]$sectionLines)
@@ -392,24 +491,26 @@ function Write-UIBox {
                 $visibleLen = $innerBoxWidth
             }
             $padding = " " * ($innerBoxWidth - $visibleLen)
-            if ($Border) { $frame.Add("│ $displayText$padding │") }
+            if ($Border) { $frame.Add("$($g.BorderV) $displayText$padding $($g.BorderV)") }
             else { $frame.Add("$displayText$padding") }
         }
     }
 
     if ($Header) {
         & $addSectionLines $Header
-        if ($Border -and ($Body -or $Footer)) { $frame.Add("├$horiz┤") }
+        if ($Border -and ($Body -or $Footer)) { $frame.Add("$($g.BorderTeeL)$horiz$($g.BorderTeeR)") }
+        elseif ($SectionRules -and ($Body -or $Footer)) { $frame.Add($plainRule) }
     }
 
     & $addSectionLines $Body
 
     if ($Footer) {
-        if ($Border) { $frame.Add("├$horiz┤") }
+        if ($Border) { $frame.Add("$($g.BorderTeeL)$horiz$($g.BorderTeeR)") }
+        elseif ($SectionRules) { $frame.Add($plainRule) }
         & $addSectionLines $Footer
     }
 
-    if ($Border) { $frame.Add("└$horiz┘") }
+    if ($Border) { $frame.Add("$($g.BorderBL)$horiz$($g.BorderBR)") }
 
     # Render the frame
     $currentY = $Y
@@ -437,14 +538,15 @@ function Get-PaginatedSelection {
         Renders a paginated list and returns the selected item, or $null on
         cancel. Supports keyboard navigation, page/selection wrap, an initial
         highlighted index, and (with -Searchable) live fuzzy-search filtering
-        powered by Measure-FuzzyMatch. With -MultiSelect, Space toggles rows
+        powered by Measure-FuzzyMatch. With -MultiSelect, Tab toggles rows
         and Enter returns an array of toggled items.
 
         Keys: Up/Down move within page, Left/Right change page, Enter selects,
-        Esc cancels. In Searchable mode any printable character extends the
-        search buffer; Backspace deletes from it. In MultiSelect mode Space
-        toggles the current row's selection (preempting buffer extension if
-        Searchable is also on).
+        Esc cancels. In Searchable mode any printable character (including
+        Space) extends the search buffer; Backspace deletes from it. In
+        MultiSelect mode Tab toggles the current row's selection — chosen so
+        Space stays available for the search buffer and never silently
+        toggles a row mid-query.
     .PARAMETER Items
         Required. Collection to choose from (strings or objects).
     .PARAMETER PageSize
@@ -467,11 +569,14 @@ function Get-PaginatedSelection {
         Minimum match score (0-1000) for an item to appear when searching.
         Default 100. Lower = more permissive.
     .PARAMETER MultiSelect
-        Enable multi-selection. Space toggles the current row's selection
+        Enable multi-selection. Tab toggles the current row's selection
         (independent of cursor position); Enter returns an array of selected
         items in original input order. Selection state persists across search
         filter changes. Esc still returns $null. Enter with no toggled items
         returns an empty array (distinguishable from $null cancel).
+
+        Tab (not Space) is the toggle so the search buffer can accept Space
+        as a normal character — matches fzf -m convention.
     .OUTPUTS
         Without -MultiSelect: the selected item, or $null if cancelled.
         With -MultiSelect: an array (possibly empty) of selected items in
@@ -515,14 +620,21 @@ function Get-PaginatedSelection {
         # partial matches visible. Set lower to be more permissive.
         [int]$SearchThreshold = 100,
 
-        [switch]$MultiSelect
+        [switch]$MultiSelect,
+
+        [switch]$Ascii
     )
 
     Assert-InteractiveHost 'Get-PaginatedSelection'
 
+    # Resolve effective rendering modes: explicit switch > env var > rich.
+    $asciiOn   = if ($PSBoundParameters.ContainsKey('Ascii'))   { [bool]$Ascii }   else { $script:_AsciiMode }
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $g = Get-Glyphs $asciiOn
+
     $itemList = @($Items)
     if ($itemList.Count -eq 0) {
-        Write-Warning "No items to select."
+        Write-Warning $script:_Strings.Status_NoItems
         return $null
     }
 
@@ -562,6 +674,12 @@ function Get-PaginatedSelection {
     Write-Host "`e[?25l" -NoNewline
     if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
+    # Capture Ctrl+C as a regular key so the function can react immediately
+    # instead of waiting for the next keystroke to unblock ReadKey. Restored
+    # in finally so the user's session-wide Ctrl+C behavior is unchanged.
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
     try {
         $firstRender = $true
         $lastHeight = 0
@@ -590,12 +708,13 @@ function Get-PaginatedSelection {
 
             # Build Sections for UIBox
             $displayTitle = if ($Searchable) {
-                if ($searchBuffer) { "$Title [Search: $searchBuffer]" } else { "$Title [Type to search]" }
+                if ($searchBuffer) { "$Title [$($script:_Strings.Footer_Search): $searchBuffer]" }
+                else { "$Title [$($script:_Strings.Footer_Search)]" }
             } else {
                 $Title
             }
 
-            $header = @($displayTitle, ("-" * $displayTitle.Length))
+            $header = @($displayTitle)
             
             $body = @()
             if ($currentPageItems.Count -gt 0) {
@@ -607,13 +726,13 @@ function Get-PaginatedSelection {
                     if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
 
                     if ($MultiSelect) {
-                        $marker = if ($selectedSet.Contains($item)) { '[x] ' } else { '[ ] ' }
-                        $displayText = "$marker$displayText"
+                        $marker = if ($selectedSet.Contains($item)) { $g.RadioOn } else { $g.RadioOff }
+                        $displayText = "$marker  $displayText"
                     }
 
                     $isRowSelected = ($i -eq $selectedIndex)
                     if ($isRowSelected) {
-                        if ($NoColor) {
+                        if ($noColorOn) {
                             $body += "$pointer$displayText"
                         } else {
                             $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
@@ -623,7 +742,7 @@ function Get-PaginatedSelection {
                     }
                 }
             } else {
-                $body += "  (No matches found)"
+                $body += "  $($script:_Strings.Status_NoMatches)"
             }
 
             $pageNumDisplay = "($($pageIndex + 1)/$pageCount)"
@@ -631,22 +750,21 @@ function Get-PaginatedSelection {
             $startDisplay = if ($filteredItems.Count -gt 0) { $startIdx + 1 } else { 0 }
             $rangeDisplay = "($startDisplay-$endIdx of $($filteredItems.Count))"
             
+            $s = $script:_Strings
             $footerLines = [System.Collections.Generic.List[string]]::new()
-            $footerLines.Add("← Prev page $pageNumDisplay   → Next page $pageNumDisplay")
+            $footerLines.Add("$($g.ArrowLeft) $($s.Footer_PrevPage) $pageNumDisplay   $($g.ArrowRight) $($s.Footer_NextPage) $pageNumDisplay")
             if ($MultiSelect) {
-                $footerLines.Add("↑↓ Move $rangeDisplay   Space Toggle ($($selectedSet.Count) selected)   Enter Confirm   Esc Cancel")
+                $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay   Tab=$($s.Footer_Toggle) ($($selectedSet.Count) $($s.Footer_Selected))   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
             } else {
-                $footerLines.Add("↑↓ Move $rangeDisplay   Enter Select    Esc Cancel")
-            }
-            if ($Searchable) {
-                $footerLines.Add("Type to search   Backspace to delete")
+                $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Cancel)")
             }
 
             $footer = @($footerLines)
 
             # Draw using UIBox
             $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
-                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y
+                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
+                                      -SectionRules -Ascii:$asciiOn
 
             # If the box shrunk, clear the leftover lines below it
             if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
@@ -661,7 +779,11 @@ function Get-PaginatedSelection {
             # Key Input
             $key = [Console]::ReadKey($true)
 
-            if ($MultiSelect -and $key.Key -eq 'Spacebar') {
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            }
+
+            if ($MultiSelect -and $key.Key -eq 'Tab') {
                 if ($currentPageItems.Count -gt 0) {
                     $toggleItem = $currentPageItems[$selectedIndex]
                     if ($selectedSet.Contains($toggleItem)) {
@@ -681,8 +803,15 @@ function Get-PaginatedSelection {
                         $handledSearchKey = $true
                     }
                 } elseif ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar)) {
-                    $searchBuffer += $key.KeyChar
-                    $handledSearchKey = $true
+                    # Skip leading spaces. A bare leading space collapses the
+                    # list to "no matches" (nothing scores against ' '), which
+                    # is the opposite of what users expect from an impulsive
+                    # Space press. Internal spaces are still allowed so
+                    # multi-word queries like "my server" work.
+                    if (-not ($searchBuffer.Length -eq 0 -and $key.KeyChar -eq ' ')) {
+                        $searchBuffer += $key.KeyChar
+                        $handledSearchKey = $true
+                    }
                 }
 
                 if ($handledSearchKey) {
@@ -777,6 +906,8 @@ function Get-PaginatedSelection {
         }
         if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
 
+        [Console]::TreatControlCAsInput = $origCtrlC
+
         # If cancelled or aborted, ensure the next prompt starts on a clean line
         if ($null -eq $result) {
             Write-Host ""
@@ -830,11 +961,16 @@ function Read-MaskedInput {
         [char]$Placeholder = '_',
 
         [switch]$AllowIncomplete,
-        
-        [switch]$ReturnRaw
+
+        [switch]$ReturnRaw,
+
+        [switch]$NoColor
     )
 
     Assert-InteractiveHost 'Read-MaskedInput'
+
+    # Resolve effective NoColor: explicit switch > env var > colored default.
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
 
     # '#' = Digit
     # 'a' = Letter
@@ -882,6 +1018,9 @@ function Read-MaskedInput {
     
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
 
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
     try {
         while ($running) {
             # Determine next slot screen index for highlighting
@@ -891,8 +1030,12 @@ function Read-MaskedInput {
             }
 
             # Render Prompt
-            Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
-            
+            if ($noColorOn) {
+                Write-Host "`r$Prompt " -NoNewline
+            } else {
+                Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
+            }
+
             $displayStr = ""
             $slotIdx = 0
 
@@ -909,21 +1052,28 @@ function Read-MaskedInput {
                 }
             }
 
-            # Draw Masked String
+            # Draw Masked String. In NoColor mode, bracket the cursor slot so
+            # the active position is visible without color highlight.
             for ($i = 0; $i -lt $displayStr.Length; $i++) {
                 if ($i -eq $nextSlotScreenIdx) {
-                    Write-Host "$($displayStr[$i])" -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                    if ($noColorOn) {
+                        Write-Host "[$($displayStr[$i])]" -NoNewline
+                    } else {
+                        Write-Host "$($displayStr[$i])" -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                    }
                 } else {
                     Write-Host "$($displayStr[$i])" -NoNewline
                 }
             }
-            
+
             Write-Host "`e[K" -NoNewline # Clear to end of line
 
             # Handle Input
             $key = [Console]::ReadKey($true)
 
-            if ($key.Key -eq 'Enter') {
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            } elseif ($key.Key -eq 'Enter') {
                 if ($AllowIncomplete -or $rawInput.Count -eq $slots.Count) {
                     $running = $false
                 }
@@ -987,6 +1137,8 @@ function Read-MaskedInput {
             Write-Host "`e[?25h" -NoNewline
         }
 
+        [Console]::TreatControlCAsInput = $origCtrlC
+
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
     }
@@ -1046,10 +1198,15 @@ function Read-ValidatedInput {
         [Parameter(Mandatory = $true, Position = 1)]
         [string]$Pattern,
 
-        [switch]$AllowEmpty
+        [switch]$AllowEmpty,
+
+        [switch]$NoColor
     )
 
     Assert-InteractiveHost 'Read-ValidatedInput'
+
+    # Resolve effective NoColor: explicit switch > env var > colored default.
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
 
     $rawInput = [System.Collections.Generic.List[char]]::new()
     $cursor = 0
@@ -1065,6 +1222,9 @@ function Read-ValidatedInput {
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
 
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
     try {
         while ($running) {
             $currentStr = -join $rawInput
@@ -1072,35 +1232,58 @@ function Read-ValidatedInput {
             if ($AllowEmpty -and $currentStr.Length -eq 0) { $isValid = $true }
 
             # Render Prompt
-            Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
-            
+            if ($noColorOn) {
+                Write-Host "`r$Prompt " -NoNewline
+            } else {
+                Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
+            }
+
             # Draw Input String
-            $useColor = ($currentStr.Length -gt 0)
-            $color = "Red"
-            if ($isValid) { $color = "Green" }
-            
-            for ($i = 0; $i -le $currentStr.Length; $i++) {
-                if ($i -eq $cursor) {
-                    $charToDraw = " "
-                    if ($i -lt $currentStr.Length) { $charToDraw = $currentStr[$i] }
-                    Write-Host $charToDraw -NoNewline -BackgroundColor Cyan -ForegroundColor Black
-                } else {
-                    if ($i -lt $currentStr.Length) {
-                        if ($useColor) {
-                            Write-Host $currentStr[$i] -NoNewline -ForegroundColor $color
-                        } else {
-                            Write-Host $currentStr[$i] -NoNewline
+            if ($noColorOn) {
+                # In NoColor mode: bracket the cursor slot, append a [OK]/[??]
+                # marker so the user still gets live validity feedback without
+                # red/green coloring.
+                for ($i = 0; $i -le $currentStr.Length; $i++) {
+                    if ($i -eq $cursor) {
+                        $charToDraw = ' '
+                        if ($i -lt $currentStr.Length) { $charToDraw = $currentStr[$i] }
+                        Write-Host "[$charToDraw]" -NoNewline
+                    } elseif ($i -lt $currentStr.Length) {
+                        Write-Host $currentStr[$i] -NoNewline
+                    }
+                }
+                $validMarker = if ($currentStr.Length -eq 0) { '' } elseif ($isValid) { ' [OK]' } else { ' [??]' }
+                Write-Host $validMarker -NoNewline
+            } else {
+                $useColor = ($currentStr.Length -gt 0)
+                $color = "Red"
+                if ($isValid) { $color = "Green" }
+
+                for ($i = 0; $i -le $currentStr.Length; $i++) {
+                    if ($i -eq $cursor) {
+                        $charToDraw = " "
+                        if ($i -lt $currentStr.Length) { $charToDraw = $currentStr[$i] }
+                        Write-Host $charToDraw -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                    } else {
+                        if ($i -lt $currentStr.Length) {
+                            if ($useColor) {
+                                Write-Host $currentStr[$i] -NoNewline -ForegroundColor $color
+                            } else {
+                                Write-Host $currentStr[$i] -NoNewline
+                            }
                         }
                     }
                 }
             }
-            
+
             Write-Host "`e[K" -NoNewline # Clear to end of line
 
             # Handle Input
             $key = [Console]::ReadKey($true)
 
-            if ($key.Key -eq 'LeftArrow') {
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            } elseif ($key.Key -eq 'LeftArrow') {
                 if ($cursor -gt 0) { $cursor-- }
             } elseif ($key.Key -eq 'RightArrow') {
                 if ($cursor -lt $rawInput.Count) { $cursor++ }
@@ -1139,6 +1322,8 @@ function Read-ValidatedInput {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+
+        [Console]::TreatControlCAsInput = $origCtrlC
 
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
@@ -1179,10 +1364,15 @@ function Read-Confirmation {
 
         [Parameter(Position = 1)]
         [ValidateSet('Yes', 'No')]
-        [string]$Default = 'No'
+        [string]$Default = 'No',
+
+        [switch]$NoColor
     )
 
     Assert-InteractiveHost 'Read-Confirmation'
+
+    # Resolve effective NoColor: explicit switch > env var > colored default.
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
 
     # 0 = Yes, 1 = No
     $selected = if ($Default -eq 'Yes') { 0 } else { 1 }
@@ -1199,30 +1389,41 @@ function Read-Confirmation {
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
 
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
     try {
         while ($running) {
-            Write-Host "`r$Question " -NoNewline -ForegroundColor Cyan
-
-            $yesText = ' Yes '
-            $noText  = ' No '
-            if ($selected -eq 0) {
-                Write-Host $yesText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
-                Write-Host '  ' -NoNewline
-                Write-Host $noText -NoNewline
+            if ($noColorOn) {
+                Write-Host "`r$Question " -NoNewline
+                # Bracket the highlighted option so it stands out without color.
+                $yesPart = if ($selected -eq 0) { '[Yes]' } else { ' Yes ' }
+                $noPart  = if ($selected -eq 1) { '[No]'  } else { ' No '  }
+                Write-Host "$yesPart  $noPart" -NoNewline
             } else {
-                Write-Host $yesText -NoNewline
-                Write-Host '  ' -NoNewline
-                Write-Host $noText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                Write-Host "`r$Question " -NoNewline -ForegroundColor Cyan
+                $yesText = ' Yes '
+                $noText  = ' No '
+                if ($selected -eq 0) {
+                    Write-Host $yesText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                    Write-Host '  ' -NoNewline
+                    Write-Host $noText -NoNewline
+                } else {
+                    Write-Host $yesText -NoNewline
+                    Write-Host '  ' -NoNewline
+                    Write-Host $noText -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                }
             }
             Write-Host "`e[K" -NoNewline # Clear to end of line
 
             $key = [Console]::ReadKey($true)
 
-            if ($key.Key -eq 'LeftArrow')  { $selected = 0 }
-            elseif ($key.Key -eq 'RightArrow') { $selected = 1 }
-            elseif ($key.Key -eq 'Tab')    { $selected = 1 - $selected }
-            elseif ($key.Key -eq 'Enter')  { $result = ($selected -eq 0); $running = $false }
-            elseif ($key.Key -eq 'Escape') { $result = $null; $running = $false }
+            if (Test-ControlC $key)             { throw [System.Management.Automation.PipelineStoppedException]::new() }
+            elseif ($key.Key -eq 'LeftArrow')   { $selected = 0 }
+            elseif ($key.Key -eq 'RightArrow')  { $selected = 1 }
+            elseif ($key.Key -eq 'Tab')         { $selected = 1 - $selected }
+            elseif ($key.Key -eq 'Enter')       { $result = ($selected -eq 0); $running = $false }
+            elseif ($key.Key -eq 'Escape')      { $result = $null; $running = $false }
             else {
                 $c = [char]::ToLower($key.KeyChar)
                 if ($c -eq 'y')     { $result = $true;  $running = $false }
@@ -1230,12 +1431,13 @@ function Read-Confirmation {
             }
         }
 
-        $finalText = if ($result -eq $true) { 'Yes' } elseif ($result -eq $false) { 'No' } else { '(cancelled)' }
+        $finalText = if ($result -eq $true) { 'Yes' } elseif ($result -eq $false) { 'No' } else { $script:_Strings.Status_Cancelled }
         Write-Host "`r$Question $finalText`e[K"
     } finally {
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
         }
+        [Console]::TreatControlCAsInput = $origCtrlC
         Write-Host ""
     }
 
@@ -1270,6 +1472,8 @@ function Show-Spinner {
           Ascii                — `| / - \`        at ~120ms (universal)
           HalfBlocks           — `▖▘▝▗`           at ~120ms
           Dots                 — `.`, `..`, ...   at ~250ms (text-only)
+          Circles              — `○◔◑◕●◕◑◔`     at ~110ms (filling wave)
+          Pulse                — `· • ● •`       at ~200ms (breathing)
     .PARAMETER NoColor
         Disable ANSI styling on the spinner glyph.
     .PARAMETER ShowTimer
@@ -1299,13 +1503,22 @@ function Show-Spinner {
         [scriptblock]$ScriptBlock,
 
         [Parameter(Position = 2)]
-        [ValidateSet('Braille', 'Ascii', 'HalfBlocks', 'Dots')]
+        [ValidateSet('Braille', 'Ascii', 'HalfBlocks', 'Dots', 'Circles', 'Pulse')]
         [string]$Style = 'Braille',
 
         [switch]$NoColor,
 
-        [switch]$ShowTimer
+        [switch]$ShowTimer,
+
+        [switch]$Ascii
     )
+
+    # Resolve effective rendering modes: explicit switch > env var > rich.
+    # -Ascii forces -Style Ascii (overrides any -Style choice) so the safety
+    # fallback is opt-in via a single consistent switch name across the module.
+    $asciiOn   = if ($PSBoundParameters.ContainsKey('Ascii'))   { [bool]$Ascii }   else { $script:_AsciiMode }
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    if ($asciiOn) { $Style = 'Ascii' }
 
     # Non-VT fallback (Azure Automation, ISE, redirected output): no animation,
     # just bracket the work with plain log lines. Elapsed always included on
@@ -1326,7 +1539,7 @@ function Show-Spinner {
             } else {
                 '{0}h {1}m' -f [int]$t.TotalHours, $t.Minutes
             }
-            Write-Host "[ $Activity done in $elapsed ]"
+            Write-Host "[ $Activity $($script:_Strings.Status_DoneIn) $elapsed ]"
         }
         return
     }
@@ -1334,10 +1547,12 @@ function Show-Spinner {
     # Glyph table + cadence per style. Cadence empirically tuned to read as
     # "alive" without flicker on fast frames.
     $config = switch ($Style) {
-        'Braille'    { @{ Frames = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'); Ms = 80 } }
+        'Braille'    { @{ Frames = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'); Ms = 80  } }
         'Ascii'      { @{ Frames = @('|','/','-','\');                            Ms = 120 } }
         'HalfBlocks' { @{ Frames = @('▖','▘','▝','▗');                            Ms = 120 } }
         'Dots'       { @{ Frames = @('.   ','..  ','... ','....');                Ms = 250 } }
+        'Circles'    { @{ Frames = @('○','◔','◑','◕','●','◕','◑','◔');            Ms = 110 } }
+        'Pulse'      { @{ Frames = @('·','•','●','•');                            Ms = 200 } }
     }
 
     # Track original cursor state so we restore exactly what was there.
@@ -1390,7 +1605,7 @@ function Show-Spinner {
     [void]$tickPS.AddArgument($config.Ms)
     [void]$tickPS.AddArgument($Activity)
     [void]$tickPS.AddArgument($stopSignal)
-    [void]$tickPS.AddArgument(-not $NoColor.IsPresent)
+    [void]$tickPS.AddArgument(-not $noColorOn)
     [void]$tickPS.AddArgument($stopwatch)
 
     $handle = $null
@@ -1458,10 +1673,17 @@ function Invoke-NestedMenu {
         [int]$MaxWidth = 0,
         [int]$X = -1,
         [int]$Y = -1,
-        [switch]$AltScreen
+        [switch]$AltScreen,
+        [switch]$NoColor,
+        [switch]$Ascii
     )
 
     Assert-InteractiveHost 'Invoke-NestedMenu'
+
+    # Resolve effective rendering modes: explicit switch > env var > rich.
+    $asciiOn   = if ($PSBoundParameters.ContainsKey('Ascii'))   { [bool]$Ascii }   else { $script:_AsciiMode }
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $g = Get-Glyphs $asciiOn
 
     # Helper to recursively normalize items
     function ConvertTo-MenuItem ($Item) {
@@ -1555,6 +1777,9 @@ function Invoke-NestedMenu {
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
     if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
 
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
     try {
         if ($X -lt 0 -and $Y -lt 0) { Write-Host "" } # Initial newline
         $firstRender = $true
@@ -1572,34 +1797,40 @@ function Invoke-NestedMenu {
 
             # Header
             $breadcrumb = ($history | ForEach-Object Title) -join " > "
-            $header = @($breadcrumb, ("-" * $breadcrumb.Length))
+            $header = @($breadcrumb)
 
             # Body
             $pointer = "> "
             $emptyPointer = "  "
             $body = @()
-            
+
             for ($i = 0; $i -lt $currentItems.Count; $i++) {
                 $item = $currentItems[$i]
                 $isRowSelected = ($i -eq $selectedIndex)
                 $displayNum = $i + 1
-                
-                $suffix = if ($null -ne $item.Children -and $item.Children.Count -gt 0) { " ►" } else { "" }
+
+                $suffix = if ($null -ne $item.Children -and $item.Children.Count -gt 0) { " $($g.ChildIndicator)" } else { "" }
                 $displayText = "[$displayNum] $($item.Label)$suffix"
 
                 if ($isRowSelected) {
-                    $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
+                    if ($noColorOn) {
+                        $body += "$pointer$displayText"
+                    } else {
+                        $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
+                    }
                 } else {
                     $body += "$emptyPointer$displayText"
                 }
             }
-            
+
             # Footer
-            $footer = @("↑↓ or 1-$($currentItems.Count): Move   →: Expand   ←: Back   Enter: Select   Esc: Exit")
+            $s = $script:_Strings
+            $footer = @("$($g.ArrowsUpDown) $($s.Footer_Move)   $($g.ArrowRight) $($s.Footer_Expand)   $($g.ArrowLeft) $($s.Footer_Back)   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Exit)")
 
             # Draw using UIBox
             $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
-                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y
+                                      -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
+                                      -SectionRules -Ascii:$asciiOn
 
             # If the box shrunk, clear the leftover lines below it
             if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
@@ -1613,6 +1844,10 @@ function Invoke-NestedMenu {
 
             # Handle Input
             $key = [Console]::ReadKey($true)
+
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            }
 
             if ([char]::IsDigit($key.KeyChar)) {
                 # Drop the buffer if the previous digit is older than the timeout.
@@ -1698,6 +1933,8 @@ function Invoke-NestedMenu {
             Write-Host "`e[?25h" -NoNewline
         }
         if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
+
+        [Console]::TreatControlCAsInput = $origCtrlC
 
         # Clean line on abort
         if ($null -eq $result) {

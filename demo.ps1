@@ -1,7 +1,41 @@
 # pwshTui demo — interactive, menu-driven tour of every exported function.
 # Picks demos from a nested menu so you can run any one in isolation
-# (and re-run them as many times as you like).
+# (and re-run them as many times as you like). Use the "Toggle Render Mode"
+# entry on the menu to flip between Unicode (default) and ASCII fallback
+# rendering to preview how the library degrades in restricted terminals.
 Import-Module ./pwshTui.psd1 -Force
+
+# Demo-level rendering preference. Toggled from the menu; threaded into every
+# interactive call as -Ascii:$script:demoAsciiMode via the Get-DemoUI splat.
+$script:demoAsciiMode = $false
+function Get-DemoUI { @{ Ascii = $script:demoAsciiMode } }
+
+# Tracks the language the demo last switched to. Starts as $PSUICulture-derived
+# default. Changing it from the menu live-mutates the module's $script:_Strings
+# via the module's session state — non-persistent: re-importing the module
+# resets to whatever the OS / session $PSUICulture says.
+$script:demoCulture = $PSUICulture
+
+function Set-DemoCulture([string]$Culture) {
+    $modulePath = (Get-Module pwshTui).ModuleBase
+    $loaded = $null
+    try {
+        Import-LocalizedData -BindingVariable 'loaded' -BaseDirectory $modulePath -FileName 'pwshTui.Strings.psd1' -UICulture $Culture -ErrorAction Stop
+    } catch {
+        Write-Host "Could not load locale '$Culture'." -ForegroundColor Yellow
+        return
+    }
+    if ($loaded) {
+        # Push the loaded strings into the module's private $script:_Strings.
+        # & (module) {…} executes the scriptblock in the module's session state
+        # so the assignment lands on the same variable the functions read.
+        & (Get-Module pwshTui) {
+            param($newStrings)
+            foreach ($k in $newStrings.Keys) { $script:_Strings[$k] = $newStrings[$k] }
+        } $loaded
+        $script:demoCulture = $Culture
+    }
+}
 
 # --- Shared demo data --------------------------------------------------------
 
@@ -58,7 +92,8 @@ function Wait-ReturnKey {
 function Show-PaginatedDemo {
     Write-DemoHeader "Get-PaginatedSelection (searchable)"
     Write-Host "Type to fuzzy-search; arrows to navigate; Enter to pick; Esc to cancel." -ForegroundColor DarkGray
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 12 -Title "Select a System Object" -DisplayProperty "Name" -Wrap -Searchable
+    $ui = Get-DemoUI
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 12 -Title "Select a System Object" -DisplayProperty "Name" -Wrap -Searchable @ui
     if ($r) { Write-Host "You selected: $($r.Name) (ID: $($r.ID))" -ForegroundColor Green }
     else    { Write-Host "Selection cancelled." -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -66,7 +101,8 @@ function Show-PaginatedDemo {
 
 function Show-PaginatedJumpDemo {
     Write-DemoHeader "Get-PaginatedSelection (-InitialIndex jumps to a specific item)"
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -InitialIndex 24 -Title "Jumped to Item 25" -DisplayProperty "Name"
+    $ui = Get-DemoUI
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -InitialIndex 24 -Title "Jumped to Item 25" -DisplayProperty "Name" @ui
     if ($r) { Write-Host "You selected: $($r.Name)" -ForegroundColor Green }
     else    { Write-Host "Selection cancelled." -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -74,8 +110,9 @@ function Show-PaginatedJumpDemo {
 
 function Show-MultiSelectDemo {
     Write-DemoHeader "Get-PaginatedSelection -MultiSelect"
-    Write-Host "Space toggles; Enter confirms; Esc cancels. Search filter persists toggle state." -ForegroundColor DarkGray
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -Title "Pick multiple objects" -DisplayProperty "Name" -Wrap -Searchable -MultiSelect
+    Write-Host "Tab toggles; Enter confirms; Esc cancels. Search filter persists toggle state. Space is free for the search buffer." -ForegroundColor DarkGray
+    $ui = Get-DemoUI
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -Title "Pick multiple objects" -DisplayProperty "Name" -Wrap -Searchable -MultiSelect @ui
     if ($null -eq $r) {
         Write-Host "Cancelled." -ForegroundColor Yellow
     } elseif ($r.Count -eq 0) {
@@ -89,7 +126,8 @@ function Show-MultiSelectDemo {
 
 function Show-NestedMenuDemo {
     Write-DemoHeader "Invoke-NestedMenu"
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal"
+    $ui = Get-DemoUI
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" @ui
     if ($r) { Write-Host "Captured Action: $r" -ForegroundColor Green }
     else    { Write-Host "Menu cancelled." -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -97,7 +135,8 @@ function Show-NestedMenuDemo {
 
 function Show-NestedMenuDeepDemo {
     Write-DemoHeader "Invoke-NestedMenu -InitialPath (deep-link into Power Saver)"
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System Configuration", "Power Options", 1)
+    $ui = Get-DemoUI
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System Configuration", "Power Options", 1) @ui
     if ($r) { Write-Host "Captured: $r" -ForegroundColor Green }
     Wait-ReturnKey
 }
@@ -105,7 +144,8 @@ function Show-NestedMenuDeepDemo {
 function Show-NestedMenuBorderedDemo {
     Write-DemoHeader "Invoke-NestedMenu (bordered, positioned, AltScreen)"
     Write-Host "Drawing a menu with -Border -MinWidth 40 -X 5 -Y 15 -AltScreen..." -ForegroundColor DarkGray
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Bordered Menu" -Border -MinWidth 40 -X 5 -Y 15 -AltScreen
+    $ui = Get-DemoUI
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title "Bordered Menu" -Border -MinWidth 40 -X 5 -Y 15 -AltScreen @ui
     if ($r) { Write-Host "Captured: $r" -ForegroundColor Green }
     Wait-ReturnKey
 }
@@ -143,7 +183,8 @@ function Show-ConfirmationDemo {
 function Show-SpinnerDemo {
     Write-DemoHeader "Show-Spinner (default Braille)"
     Write-Host "Running a 2-second sleep..." -ForegroundColor DarkGray
-    Show-Spinner -Activity "Working" -ScriptBlock { Start-Sleep -Milliseconds 2000 }
+    $ui = Get-DemoUI
+    Show-Spinner -Activity "Working" -ScriptBlock { Start-Sleep -Milliseconds 2000 } @ui
     Write-Host "Done." -ForegroundColor Green
     Wait-ReturnKey
 }
@@ -151,15 +192,20 @@ function Show-SpinnerDemo {
 function Show-SpinnerTimerDemo {
     Write-DemoHeader "Show-Spinner -ShowTimer"
     Write-Host "Running a 3.5-second sleep with the live elapsed-time counter..." -ForegroundColor DarkGray
-    Show-Spinner -Activity "Querying" -ShowTimer -ScriptBlock { Start-Sleep -Milliseconds 3500 }
+    $ui = Get-DemoUI
+    Show-Spinner -Activity "Querying" -ShowTimer -ScriptBlock { Start-Sleep -Milliseconds 3500 } @ui
     Write-Host "Done." -ForegroundColor Green
     Wait-ReturnKey
 }
 
 function Show-SpinnerStylesDemo {
-    Write-DemoHeader "Show-Spinner — all four styles, 1.5s each"
-    foreach ($style in 'Braille','Ascii','HalfBlocks','Dots') {
-        Show-Spinner -Activity "Style: $style" -Style $style -ScriptBlock { Start-Sleep -Milliseconds 1500 }
+    Write-DemoHeader "Show-Spinner — all six styles, 1.5s each"
+    if ($script:demoAsciiMode) {
+        Write-Host "ASCII mode is on — -Ascii forces Style=Ascii regardless of -Style, so all four render as the Ascii glyph below. Toggle ASCII off to see each style as-named." -ForegroundColor DarkGray
+    }
+    $ui = Get-DemoUI
+    foreach ($style in 'Braille','Ascii','HalfBlocks','Dots','Circles','Pulse') {
+        Show-Spinner -Activity "Style: $style" -Style $style -ScriptBlock { Start-Sleep -Milliseconds 1500 } @ui
     }
     Write-Host "All styles shown." -ForegroundColor Green
     Wait-ReturnKey
@@ -169,49 +215,62 @@ function Show-SpinnerClosureDemo {
     Write-DemoHeader "Show-Spinner — closures Just Work"
     $magicNumber = 42
     Write-Host "Caller scope holds `$magicNumber = $magicNumber. The scriptblock will use it without -ArgumentList." -ForegroundColor DarkGray
+    $ui = Get-DemoUI
     $result = Show-Spinner -Activity "Computing" -ShowTimer -ScriptBlock {
         Start-Sleep -Milliseconds 1500
         $magicNumber * 2
-    }
+    } @ui
     Write-Host "Scriptblock returned: $result (expected: 84)" -ForegroundColor Green
     Wait-ReturnKey
 }
 
 function Show-UIBoxDemo {
     Write-DemoHeader "Write-UIBox (standalone)"
-    Write-UIBox -Header "System Status" -Body @("CPU: 12%","RAM: 4.2GB","Disk: 80% Full") -Footer "Demo box" -Border
+    $ui = Get-DemoUI
+    Write-UIBox -Header "System Status" -Body @("CPU: 12%","RAM: 4.2GB","Disk: 80% Full") -Footer "Demo box" -Border @ui
     Wait-ReturnKey
 }
 
 # --- Top-level demo selector -------------------------------------------------
 
-$demoMenu = @(
-    @{ Label = "Selection & Menus"; Children = @(
-        @{ Label = "Paginated Selection (searchable)";                 Value = "paginated" }
-        @{ Label = "Paginated Selection (-InitialIndex jump to #25)";  Value = "paginated_jump" }
-        @{ Label = "Paginated Multi-Select (Space toggles)";           Value = "multiselect" }
-        @{ Label = "Nested Menu";                                      Value = "nested" }
-        @{ Label = "Nested Menu (-InitialPath deep-link)";             Value = "nested_deep" }
-        @{ Label = "Nested Menu (bordered + AltScreen)";               Value = "nested_bordered" }
-    )}
-    @{ Label = "Input Prompts"; Children = @(
-        @{ Label = "Masked Input (phone, MAC)";                        Value = "masked" }
-        @{ Label = "Validated Input (IPv4, CIDR, email)";              Value = "validated" }
-        @{ Label = "Yes/No Confirmation";                              Value = "confirm" }
-    )}
-    @{ Label = "Async & Layout"; Children = @(
-        @{ Label = "Show-Spinner (default Braille)";                   Value = "spinner" }
-        @{ Label = "Show-Spinner with -ShowTimer";                     Value = "spinner_timer" }
-        @{ Label = "Show-Spinner — all four styles";                   Value = "spinner_styles" }
-        @{ Label = "Show-Spinner — closure capture";                   Value = "spinner_closure" }
-        @{ Label = "Write-UIBox (standalone)";                         Value = "uibox" }
-    )}
-    @{ Label = "Exit demo"; Value = "exit" }
-)
-
+# Rebuild the menu tree each iteration so the "Toggle Render Mode" label
+# always shows the current mode without restarting the script.
 $running = $true
 while ($running) {
-    $choice = Invoke-NestedMenu -MenuTree $demoMenu -Title "pwshTui Demo"
+    $modeLabel = if ($script:demoAsciiMode) { 'ASCII' } else { 'Unicode' }
+    $demoMenu = @(
+        @{ Label = "Selection & Menus"; Children = @(
+            @{ Label = "Paginated Selection (searchable)";                 Value = "paginated" }
+            @{ Label = "Paginated Selection (-InitialIndex jump to #25)";  Value = "paginated_jump" }
+            @{ Label = "Paginated Multi-Select (Tab toggles)";             Value = "multiselect" }
+            @{ Label = "Nested Menu";                                      Value = "nested" }
+            @{ Label = "Nested Menu (-InitialPath deep-link)";             Value = "nested_deep" }
+            @{ Label = "Nested Menu (bordered + AltScreen)";               Value = "nested_bordered" }
+        )}
+        @{ Label = "Input Prompts"; Children = @(
+            @{ Label = "Masked Input (phone, MAC)";                        Value = "masked" }
+            @{ Label = "Validated Input (IPv4, CIDR, email)";              Value = "validated" }
+            @{ Label = "Yes/No Confirmation";                              Value = "confirm" }
+        )}
+        @{ Label = "Async & Layout"; Children = @(
+            @{ Label = "Show-Spinner (default Braille)";                   Value = "spinner" }
+            @{ Label = "Show-Spinner with -ShowTimer";                     Value = "spinner_timer" }
+            @{ Label = "Show-Spinner — all six styles";                    Value = "spinner_styles" }
+            @{ Label = "Show-Spinner — closure capture";                   Value = "spinner_closure" }
+            @{ Label = "Write-UIBox (standalone)";                         Value = "uibox" }
+        )}
+        @{ Label = "Toggle Render Mode (currently: $modeLabel)";           Value = "toggle_ascii" }
+        @{ Label = "Change Language (currently: $script:demoCulture)"; Children = @(
+            @{ Label = "English (en-US)";  Value = "lang_en" }
+            @{ Label = "Français (fr-FR)"; Value = "lang_fr" }
+            @{ Label = "Español (es-ES)";  Value = "lang_es" }
+            @{ Label = "Deutsch (de-DE)";  Value = "lang_de" }
+        )}
+        @{ Label = "Exit demo";                                            Value = "exit" }
+    )
+
+    $ui = Get-DemoUI
+    $choice = Invoke-NestedMenu -MenuTree $demoMenu -Title "pwshTui Demo [$modeLabel | $script:demoCulture]" @ui
     switch ($choice) {
         'paginated'         { Show-PaginatedDemo }
         'paginated_jump'    { Show-PaginatedJumpDemo }
@@ -227,6 +286,11 @@ while ($running) {
         'spinner_styles'    { Show-SpinnerStylesDemo }
         'spinner_closure'   { Show-SpinnerClosureDemo }
         'uibox'             { Show-UIBoxDemo }
+        'toggle_ascii'      { $script:demoAsciiMode = -not $script:demoAsciiMode }
+        'lang_en'           { Set-DemoCulture 'en-US' }
+        'lang_fr'           { Set-DemoCulture 'fr-FR' }
+        'lang_es'           { Set-DemoCulture 'es-ES' }
+        'lang_de'           { Set-DemoCulture 'de-DE' }
         'exit'              { $running = $false }
         default             { $running = $false }   # $null = Esc at top menu
     }
