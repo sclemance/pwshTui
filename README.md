@@ -62,6 +62,7 @@ A formatted input prompt that enforces structure and restricts keystrokes as the
 - Discards invalid keystrokes dynamically (e.g., ignoring letters when a digit is expected).
 - Live syntax highlighting indicating the current input slot, hiding the real terminal cursor to prevent visual glitches.
 - Returns the cleanly formatted string by default, or the raw input if requested.
+- **Paste safety:** uses bracketed-paste mode so pasted content is delivered as one unit; chars run through the same per-slot validation as typed input (so `555-1234` pasted into a phone mask just works — dashes filtered). Any control character in the body rejects the whole paste with a visible warning rather than silently mangling the value.
 
 **Mask Syntax:**
 - `#`: Requires a Digit (0-9)
@@ -104,6 +105,7 @@ A free-form input field with live Regex validation. Ideal for variable-length bu
 **Features:**
 - Prevents the user from pressing Enter until the input perfectly matches a provided Regular Expression.
 - The input text dynamically turns **Green** when valid and **Red** when invalid as you type.
+- **Paste safety:** uses bracketed-paste mode so pasted content is delivered as one unit and the existing live regex validation runs on the post-paste buffer. Any control character in the paste body rejects the whole paste with a visible warning. A trailing `\r`/`\n` in the paste is treated as Enter and auto-submits if the buffer matches the pattern.
 
 **Parameters:**
 - `-Prompt`: (Required) The text displayed before the input field.
@@ -165,7 +167,90 @@ if (Read-Confirmation -Question "Delete the file?" -Default No) {
 
 ---
 
-### 5. `Invoke-NestedMenu`
+### 5. `Read-Password`
+A masked password prompt that returns a `SecureString` by default. Cursor navigation (arrow keys, Home/End) is intentionally disabled, matching conventional password-field UX — only typing and Backspace are accepted.
+
+**Features:**
+- Characters go straight into a `SecureString` from the first keystroke — plaintext never lives in a managed `List[char]` or `string` buffer.
+- Optional twice-prompt confirmation with constant-time-ish comparison via short-lived BSTR unwrap (BSTRs zeroed in `finally`).
+- **Paste safety (bracketed-paste protocol):** pasted content is delivered as one unit, not character-by-character — so an embedded newline in a clipboard value cannot truncate the password mid-stream. If the paste body contains any control characters, the entire paste is rejected with a visible warning rather than silently mangled. With `-Confirm` this prevents the worst failure mode: identically-mangled pastes that "match" each other but don't match the source-of-truth password, locking the user out of whatever they just provisioned.
+- Trailing `\r`/`\n` in a paste is treated as the user's Enter press (matches the natural "paste, then submit" UX from password managers).
+- `-Confirm` retries on mismatch up to `-MaxAttempts` (default 3); returns `$null` once exhausted.
+
+**Parameters:**
+- `-Prompt`: Label shown before the password field. Default: `"Password:"`.
+- `-MaskChar`: Character displayed for each typed character. Default: `*`.
+- `-HideTyping`: (Switch) Show nothing as the user types — not even a mask char. Hides the password length from observers.
+- `-MinLength`: Minimum length before `Enter` is accepted. Default: `1`.
+- `-MaxLength`: Maximum length. Additional keystrokes are ignored once reached. `0` (default) means unbounded.
+- `-Confirm`: (Switch) Prompt twice and require both entries to match.
+- `-ConfirmPrompt`: Label for the confirmation field. Default: `"Confirm password:"`.
+- `-MaxAttempts`: Maximum mismatched-confirmation attempts before giving up. Default: `3`.
+- `-AsPlainText`: (Switch) Return a `[string]` instead of a `[SecureString]`. The plain text lives in managed memory and may surface in debuggers, crash dumps, or process inspection — prefer the default SecureString when possible.
+- `-NoColor`: (Switch) Disable ANSI styling.
+
+**Shortcuts:**
+- Typing / `Backspace`: append / delete the last character. Cursor navigation is intentionally disabled.
+- `Enter`: Submit (if length ≥ `-MinLength`).
+- `Esc`: Cancel (returns `$null`).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Default: SecureString
+$pw = Read-Password -Prompt "Password:" -MinLength 12
+
+# Confirm twice
+$pw = Read-Password -Confirm -MinLength 12
+
+# Plain string (less safe but sometimes needed for non-credential string APIs)
+$pin = Read-Password -Prompt "PIN:" -HideTyping -MaxLength 6 -AsPlainText
+```
+
+---
+
+### 6. `Read-Choice`
+A one-line N-option selector with optional multi-select. Sits between `Read-Confirmation` (always 2 options) and `Get-PaginatedSelection` (long, searchable lists) for the short-inline-pick case.
+
+**Features:**
+- 2–9 options on a single line, always numbered (`1.Red  2.Green  3.Blue …`) so digit-key selection is discoverable.
+- Arrow keys (`Left`/`Right`/`Tab`) or `Home`/`End` for keyboard navigation.
+- Digit `1`–`N` jumps to (and in single-select, commits) the corresponding option.
+- `-MultiSelect`: `Space` toggles the focused option's check state; pulls from the module's shared radio glyphs (`●`/`○` Unicode, `[x]`/`[ ]` ASCII). Returns the array of selected labels.
+- Focus marker: cyan-bg highlight in color mode; `> ` prefix in `-NoColor` mode so column alignment stays stable as focus moves.
+
+**Parameters:**
+- `-Question`: (Required) The question shown before the options.
+- `-Options`: (Required) `[string[]]` of 2–9 option labels. Enforced via `ValidateCount(2,9)`.
+- `-Default`: Initial focused-option index (0-based). Default: `0`.
+- `-MultiSelect`: (Switch) Allow toggling multiple options with `Space`; `Enter` returns an array of selected labels.
+- `-PreSelected`: `[int[]]` initial checked indices (0-based) for `-MultiSelect`. Out-of-range indices silently dropped.
+- `-NoColor`: (Switch) Disable ANSI styling — focus shown by `> ` prefix instead of cyan highlight.
+
+**Shortcuts:**
+- `←` / `→` / `Tab`: Move the focus highlight.
+- `1`–`9`: Jump to (and commit, in single-select) the corresponding option.
+- `Home` / `End`: Move to first/last option.
+- `Space`: (Multi-select only) Toggle the focused option's check state.
+- `Enter`: Confirm. Single-select returns the label; multi-select returns the array of selected labels.
+- `Esc`: Cancel (returns `$null`).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Single-select
+$color = Read-Choice -Question "Pick a color:" -Options 'Red','Green','Blue'
+
+# Multi-select with two pre-checked
+$toppings = Read-Choice -Question "Toppings:" -Options 'Cheese','Pepperoni','Mushroom','Olives','Onion' -MultiSelect -PreSelected 0,1
+# $toppings is e.g. @('Cheese','Mushroom')
+```
+
+---
+
+### 7. `Invoke-NestedMenu`
 A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Features:**
@@ -208,7 +293,7 @@ $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -Initia
 
 ---
 
-### 6. `Write-UIBox`
+### 8. `Write-UIBox`
 The underlying layout engine used by the interactive functions, also available for standalone use.
 
 **Features:**
@@ -233,7 +318,7 @@ The underlying layout engine used by the interactive functions, also available f
 Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 ---
 
-### 7. `Measure-FuzzyMatch`
+### 9. `Measure-FuzzyMatch`
 A utility function for calculating the relevance score between a search term and a target string. It uses a cross-platform, ensemble fuzzy-matching approach written entirely in pure PowerShell, ensuring it works securely in locked-down environments like Azure Automation without compiling C# code.
 
 **Features:**
@@ -261,7 +346,7 @@ $score2 = Measure-FuzzyMatch -SearchTerm "storge" -TargetText "Storage"
 
 ---
 
-### 8. `Show-Spinner`
+### 10. `Show-Spinner`
 Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" UX behind one call.
 
 **Features:**
@@ -275,11 +360,12 @@ Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" 
 - `-Activity`: (Required) Text shown after the spinner glyph.
 - `-ScriptBlock`: (Required) The work to execute. Runs on the foreground thread in the caller's scope.
 - `-Style`: Glyph style — `Braille` (default), `Ascii`, `HalfBlocks`, `Dots`, `Circles`, `Pulse`.
-- `-ShowTimer`: (Switch) Append a live elapsed-time counter to the activity line.
+- `-ShowTimer`: (Switch) Append a live elapsed-time counter to the activity line. Controls on-screen display only; orthogonal to `-ElapsedVariable`.
+- `-ElapsedVariable`: Name (no `$`) of a variable in the caller's scope to receive the total elapsed time as a `[TimeSpan]` after the spinner exits. Mirrors PowerShell's `-OutVariable` / `-ErrorVariable` convention. The spinner line is erased on exit in interactive (VT) mode, so capture this if you want to render `"fetched in 2.3s"` yourself.
 - `-NoColor`: (Switch) Disable ANSI styling on the spinner glyph.
 - `-Ascii`: (Switch) Forces `-Style Ascii` regardless of any `-Style` argument. Single consistent fallback switch across the module. See [Rendering Modes](#rendering-modes).
 
-**Clean in-scriptblock output:** plain `Write-Host` from inside the scriptblock still tears the spinner row (same limitation as `Write-Progress`). Use [`Write-Spinner`](#9-write-spinner) as the opt-in clean channel — it buffers messages and the ticker flushes them above the animated glyph so they persist in scrollback.
+**Clean in-scriptblock output:** plain `Write-Host` from inside the scriptblock still tears the spinner row (same limitation as `Write-Progress`). Use [`Write-Spinner`](#11-write-spinner) as the opt-in clean channel — it buffers messages and the ticker flushes them above the animated glyph so they persist in scrollback.
 
 **Example:**
 ```powershell
@@ -290,11 +376,17 @@ $users = Show-Spinner -Activity "Fetching users..." -ShowTimer -ScriptBlock {
     Invoke-RestMethod "$baseUrl/users"   # closure over $baseUrl works
 }
 # $users contains the response; spinner line cleared on return.
+
+# Capture elapsed time and compose your own "done" line:
+$users = Show-Spinner -Activity "Fetching" -ElapsedVariable el -ScriptBlock {
+    Invoke-RestMethod "$baseUrl/users"
+}
+Write-Host "Got $($users.Count) users in $('{0:F1}s' -f $el.TotalSeconds)"
 ```
 
 ---
 
-### 9. `Write-Spinner`
+### 11. `Write-Spinner`
 Emit a log line that persists above an active spinner. The opt-in clean channel for any visible text the scriptblock needs to emit while a spinner is running — solves the otherwise-corrupting interleave with plain `Write-Host`.
 
 **Features:**
@@ -350,11 +442,13 @@ Available on: `Write-UIBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Sho
 |---|---|---|
 | `Get-PaginatedSelection` / `Invoke-NestedMenu` | Cyan-highlighted selected row | Selection signalled by the `> ` pointer only |
 | `Read-MaskedInput` | Cyan-bg cursor slot | `[X]`-bracketed cursor slot |
+| `Read-Password` | Cyan-bg cursor block | `_` cursor block |
 | `Read-ValidatedInput` | Red/green text + cyan cursor | `[X]`-bracketed cursor + trailing `[OK]` / `[??]` marker |
 | `Read-Confirmation` | Cyan-bg selected button | `[Yes]` / `[No]` bracket on the selected option |
+| `Read-Choice` | Cyan-bg focused option | `> ` prefix on the focused option |
 | `Show-Spinner` | Cyan spinner glyph | Plain glyph |
 
-Available on: `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-ValidatedInput`, `Read-Confirmation`.
+Available on: `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`.
 
 **Resolution rule** (consistent everywhere): explicit per-call switch > environment variable > rich default. A per-call `-Ascii:$false` will force Unicode even when the env var is set.
 
@@ -394,7 +488,8 @@ All functions in this module share the following safety guarantees:
 - **Stateful Cursor Management:** The real terminal cursor is automatically hidden to prevent flickering and visual tearing while drawing menus or input fields. The module captures the state of your terminal's cursor *before* running, and guarantees it is restored to that exact state when it exits.
 - **Clean Prompt Fallback:** If you cancel an input or menu (via `Esc` or `CTRL+C`), the module automatically emits a newline to ensure your subsequent shell prompt drops to a clean, fresh line, avoiding trailing artifacts.
 - **CTRL+C Safe:** Interactive functions set `[Console]::TreatControlCAsInput = $true` so the Ctrl+C keypress is caught **immediately** (not deferred until the next key) and rethrown as a `PipelineStoppedException`. The `finally` block runs first — cursor restored, alt-screen exited, `TreatControlCAsInput` restored — then the exception propagates. PowerShell handles it as a normal Ctrl+C, so the script terminates cleanly with no stack trace and the terminal lands you back at a clean prompt. (Esc remains the soft cancel — returns `$null`.)
-- **Host Compatibility:** Virtual-terminal capability is detected once at module import (`$Host.UI.SupportsVirtualTerminal`). Interactive functions (`Get-PaginatedSelection`, `Read-MaskedInput`, `Read-ValidatedInput`, `Read-Confirmation`, `Invoke-NestedMenu`) fail fast with a clear error naming the function and current host when invoked from non-VT contexts (Azure Automation, Windows PowerShell ISE, redirected output) — they need `[Console]::ReadKey` which can't be polyfilled. `Show-Spinner` falls back to plain bracket log lines in the same contexts so scripts that wrap work in a spinner still run cleanly under automation.
+- **Host Compatibility:** Virtual-terminal capability is detected once at module import (`$Host.UI.SupportsVirtualTerminal`). Interactive functions (`Get-PaginatedSelection`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Invoke-NestedMenu`) fail fast with a clear error naming the function and current host when invoked from non-VT contexts (Azure Automation, Windows PowerShell ISE, redirected output) — they need `[Console]::ReadKey` which can't be polyfilled. `Show-Spinner` falls back to plain bracket log lines in the same contexts so scripts that wrap work in a spinner still run cleanly under automation.
+- **Paste safety on text input:** `Read-Password`, `Read-MaskedInput`, and `Read-ValidatedInput` enable bracketed-paste mode (`\e[?2004h`) on entry, so the terminal hands them the pasted text as one delimited unit instead of streaming bytes that mix with the per-character Enter/Backspace handlers. Each function applies its own sanitation: control characters in the paste body trigger a visible reject; a single trailing `\r`/`\n` is treated as the user's Enter press. This eliminates the otherwise-silent corruption when a pasted value contains an embedded newline, which is particularly critical for `Read-Password -Confirm` where two identically-mangled pastes would otherwise "match" each other and lock the user out of whatever they just provisioned. Older terminals that don't recognize the bracketed-paste enable code silently ignore it and fall back to today's per-character behavior; modern Windows Terminal, iTerm2, Terminal.app, gnome-terminal, kitty, alacritty, and the VS Code integrated terminal all support it.
 
 ## Installation
 

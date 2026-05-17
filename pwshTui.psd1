@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.4.0'
+    ModuleVersion        = '0.5.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
-    Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, masked / validated / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
+    Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-ValidatedInput', 'Read-Confirmation', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-UIBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-UIBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,48 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.5.0
+- Read-Password: new masked-password prompt returning [SecureString]
+  by default ([string] under -AsPlainText). Chars go straight into a
+  SecureString from the first keystroke; plaintext never lives in a
+  managed buffer. Forward-only typing (Backspace deletes; no cursor
+  navigation, matching conventional password UX). -Confirm prompts
+  twice and compares via short-lived BSTR unwrap with ZeroFreeBSTR
+  cleanup; retries up to -MaxAttempts (default 3). -MinLength /
+  -MaxLength enforce bounds. -HideTyping hides chars entirely (not
+  even a mask char) to obscure password length.
+- Read-Choice: new one-line N-option selector (2-9 options). Arrow
+  keys, Tab, Home/End, and digit hotkeys 1-N for navigation. In
+  single-select, digit commits immediately (Y/N-style shortcut); in
+  -MultiSelect, Space toggles and Enter returns the array of selected
+  labels. Uses the shared radio glyphs (●/○ Unicode, [x]/[ ] ASCII)
+  for multi-select. Focus shown by cyan bg in color mode, '> ' prefix
+  in -NoColor mode (stable column alignment).
+- Bracketed-paste protection on text input: Read-Password,
+  Read-MaskedInput, and Read-ValidatedInput now enable bracketed paste
+  (\e[?2004h) on entry and parse the [200~ ... [201~ sentinels around
+  pasted content. Pasted text is validated as a unit instead of
+  streaming through the per-keystroke Enter handler. Any control
+  character in the paste body rejects the whole paste with a visible
+  warning rather than silently mangling the value. Trailing \r/\n is
+  treated as the user's Enter press. Critical for Read-Password
+  -Confirm, where identically-mangled pastes would otherwise "match"
+  each other and lock the user out. Older terminals that don't
+  recognize the sequences silently fall back to per-character handling.
+- Show-Spinner -ElapsedVariable: stopwatch now always runs (previously
+  conditional on -ShowTimer). New -ElapsedVariable <name> parameter
+  writes the total elapsed [TimeSpan] to a variable in the caller's
+  scope after exit, mirroring -OutVariable / -ErrorVariable style.
+  Lets callers compose their own "done in 2.3s" line; the spinner row
+  is still erased on exit in VT mode. Module-scope-aware via
+  $PSCmdlet.SessionState.PSVariable.Set so it crosses the module
+  boundary correctly.
+- Internal: Read-KeyOrPaste private helper centralizes bracketed-paste
+  protocol parsing (CSI sequence consumption, [200~/[201~ sentinel
+  detection, embedded-ESC handling, trailing-newline stripping,
+  control-char flagging). Each input function applies its own
+  sanitation policy on the structured event the helper returns.
+
 0.4.0
 - Footer + visual cleanup: dropped the "Type to search / Backspace to
   delete" hint line; standardized word-pair labels on '=' (e.g.

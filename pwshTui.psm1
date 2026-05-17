@@ -117,6 +117,91 @@ function Assert-InteractiveHost {
     }
 }
 
+function Read-KeyOrPaste {
+    # Internal: read one input event, transparently consuming bracketed-paste
+    # sequences. Returns a PSCustomObject:
+    #   Kind = 'Key'     → Key field holds a [ConsoleKeyInfo] (normal keystroke)
+    #   Kind = 'Paste'   → Text, TrailingNewline, HasControlChars fields
+    #   Kind = 'Discard' → an ESC sequence we don't handle; caller re-reads
+    #
+    # Callers must have enabled bracketed paste (`\e[?2004h`) before their
+    # input loop and must disable it (`\e[?2004l`) in finally — this helper
+    # only does protocol parsing, not setup. Sanitation policy (which control
+    # chars are acceptable, how to handle a trailing newline) is left to the
+    # caller so each input function can apply rules appropriate to its
+    # context.
+    $key = [Console]::ReadKey($true)
+    # Fast path: anything that's not an Escape with buffered follow-up is a
+    # normal key. A real Escape press is followed by a pause; a terminal-
+    # sent CSI sequence arrives back-to-back, so KeyAvailable right after
+    # the ESC distinguishes them. The KeyAvailable check is the standard
+    # ANSI-escape disambiguation trick — same as GNU Readline and friends.
+    if ($key.Key -ne 'Escape' -or -not [Console]::KeyAvailable) {
+        return [PSCustomObject]@{ Kind = 'Key'; Key = $key }
+    }
+    # CSI sequence: read parameter bytes up to a final byte (~ or A-Za-z per
+    # ECMA-48). Capped at 10 chars defensively against pathological input.
+    $seq = ''
+    while ([Console]::KeyAvailable -and $seq.Length -lt 10) {
+        $next = [Console]::ReadKey($true)
+        $seq += $next.KeyChar
+        if ($next.KeyChar -match '[~A-Za-z]') { break }
+    }
+    if ($seq -ne '[200~') {
+        # Unrecognized CSI (cursor reports, mouse events, raw arrow keys
+        # arriving as ESC sequences on some terminals, etc.) — silently
+        # discard and let the caller re-read.
+        return [PSCustomObject]@{ Kind = 'Discard' }
+    }
+    # Bracketed paste body. Consume until [201~ end sentinel, watching for
+    # ESC sequences embedded in paste content (rare but possible — a paste
+    # of terminal-recorded output, say).
+    $pasteBuf = New-Object System.Text.StringBuilder
+    $endSeen = $false
+    while (-not $endSeen) {
+        $pc = [Console]::ReadKey($true)
+        if (Test-ControlC $pc) {
+            throw [System.Management.Automation.PipelineStoppedException]::new()
+        }
+        if ($pc.KeyChar -eq [char]27 -and [Console]::KeyAvailable) {
+            $endSeq = ''
+            while ([Console]::KeyAvailable -and $endSeq.Length -lt 10) {
+                $en = [Console]::ReadKey($true)
+                $endSeq += $en.KeyChar
+                if ($en.KeyChar -match '[~A-Za-z]') { break }
+            }
+            if ($endSeq -eq '[201~') {
+                $endSeen = $true
+            } else {
+                # Unknown ESC sequence inside the paste body — keep the
+                # bytes; the control-char check below will flag the paste
+                # as unsafe and the caller will reject.
+                [void]$pasteBuf.Append([char]27)
+                [void]$pasteBuf.Append($endSeq)
+            }
+        } else {
+            [void]$pasteBuf.Append($pc.KeyChar)
+        }
+    }
+    $text = $pasteBuf.ToString()
+    # Trailing CR/LF stripping: clipboard sources commonly copy with a
+    # trailing newline, and the natural UX is "paste, then submit." We
+    # treat the trailing newline as the user's Enter press; the caller
+    # decides whether to auto-commit based on its own validation state.
+    $trailingNewline = $false
+    if ($text -match '[\r\n]+$') {
+        $trailingNewline = $true
+        $text = $text -replace '[\r\n]+$', ''
+    }
+    $hasControlChars = ($text -match '[\x00-\x1F\x7F]')
+    return [PSCustomObject]@{
+        Kind            = 'Paste'
+        Text            = $text
+        TrailingNewline = $trailingNewline
+        HasControlChars = $hasControlChars
+    }
+}
+
 function Measure-FuzzyMatch {
     <#
     .SYNOPSIS
@@ -1038,6 +1123,9 @@ function Read-MaskedInput {
     }
     
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
+    # Enable bracketed paste so we can validate pasted content as a unit
+    # instead of letting embedded newlines mid-paste commit the buffer.
+    Write-Host "`e[?2004h" -NoNewline
 
     $origCtrlC = [Console]::TreatControlCAsInput
     [Console]::TreatControlCAsInput = $true
@@ -1090,60 +1178,103 @@ function Read-MaskedInput {
             Write-Host "`e[K" -NoNewline # Clear to end of line
 
             # Handle Input
-            $key = [Console]::ReadKey($true)
+            $evt = Read-KeyOrPaste
 
-            if (Test-ControlC $key) {
-                throw [System.Management.Automation.PipelineStoppedException]::new()
-            } elseif ($key.Key -eq 'Enter') {
-                if ($AllowIncomplete -or $rawInput.Count -eq $slots.Count) {
-                    $running = $false
-                }
-            } elseif ($key.Key -eq 'Escape') {
-                $rawInput.Clear()
-                $running = $false
-            } elseif ($key.Key -eq 'LeftArrow') {
-                if ($cursor -gt 0) { $cursor-- }
-            } elseif ($key.Key -eq 'RightArrow') {
-                if ($cursor -lt $rawInput.Count) { $cursor++ }
-            } elseif ($key.Key -eq 'Home') {
-                $cursor = 0
-            } elseif ($key.Key -eq 'End') {
-                $cursor = $rawInput.Count
-            } elseif ($key.Key -eq 'Backspace') {
-                if ($cursor -gt 0) {
-                    $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
-                    $temp.RemoveAt($cursor - 1)
-                    if (& $checkValid $temp) {
-                        $rawInput = $temp
-                        $cursor--
+            if ($evt.Kind -eq 'Discard') {
+                # No-op — let the loop redraw and re-read.
+            } elseif ($evt.Kind -eq 'Paste') {
+                # Sanitation: reject the whole paste if it contains any
+                # control character in the body. Same logic as Read-Password
+                # — silent partial application is worse than a visible reject.
+                if ($evt.HasControlChars) {
+                    if ($noColorOn) {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
+                    } else {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
                     }
-                }
-            } elseif ($key.Key -eq 'Delete') {
-                if ($cursor -lt $rawInput.Count) {
-                    $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
-                    $temp.RemoveAt($cursor)
-                    if (& $checkValid $temp) {
-                        $rawInput = $temp
-                    }
-                }
-            } else {
-                if ($cursor -lt $slots.Count) {
-                    $char = $key.KeyChar
-                    if (-not [char]::IsControl($char)) {
+                } else {
+                    # Apply each pasted char through the same per-slot
+                    # validation pipeline as typed input. Chars that don't
+                    # match the current slot's type are silently skipped —
+                    # this lets users paste "555-1234" into a phone mask and
+                    # have the dash filtered out, matching how typed-char
+                    # rejection already works.
+                    foreach ($pc in $evt.Text.GetEnumerator()) {
+                        if ($cursor -ge $slots.Count) { break }
+                        $candidate = $pc
                         $expectedType = $slots[$cursor].Type
-                        if ($expectedType -eq 'X' -and $char.ToString() -match '^[0-9a-fA-F]$') { $char = [char]::ToUpper($char) }
-                        if ($expectedType -eq 'x' -and $char.ToString() -match '^[0-9a-fA-F]$') { $char = [char]::ToLower($char) }
-
+                        if ($expectedType -eq 'X' -and $candidate.ToString() -match '^[0-9a-fA-F]$') { $candidate = [char]::ToUpper($candidate) }
+                        if ($expectedType -eq 'x' -and $candidate.ToString() -match '^[0-9a-fA-F]$') { $candidate = [char]::ToLower($candidate) }
                         $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
                         if ($cursor -eq $temp.Count) {
-                            $temp.Add($char)
+                            $temp.Add($candidate)
                         } else {
-                            $temp[$cursor] = $char
+                            $temp[$cursor] = $candidate
                         }
-
                         if (& $checkValid $temp) {
                             $rawInput = $temp
                             $cursor++
+                        }
+                    }
+                    if ($evt.TrailingNewline -and ($AllowIncomplete -or $rawInput.Count -eq $slots.Count)) {
+                        $running = $false
+                    }
+                }
+            } else {
+                $key = $evt.Key
+                if (Test-ControlC $key) {
+                    throw [System.Management.Automation.PipelineStoppedException]::new()
+                } elseif ($key.Key -eq 'Enter') {
+                    if ($AllowIncomplete -or $rawInput.Count -eq $slots.Count) {
+                        $running = $false
+                    }
+                } elseif ($key.Key -eq 'Escape') {
+                    $rawInput.Clear()
+                    $running = $false
+                } elseif ($key.Key -eq 'LeftArrow') {
+                    if ($cursor -gt 0) { $cursor-- }
+                } elseif ($key.Key -eq 'RightArrow') {
+                    if ($cursor -lt $rawInput.Count) { $cursor++ }
+                } elseif ($key.Key -eq 'Home') {
+                    $cursor = 0
+                } elseif ($key.Key -eq 'End') {
+                    $cursor = $rawInput.Count
+                } elseif ($key.Key -eq 'Backspace') {
+                    if ($cursor -gt 0) {
+                        $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
+                        $temp.RemoveAt($cursor - 1)
+                        if (& $checkValid $temp) {
+                            $rawInput = $temp
+                            $cursor--
+                        }
+                    }
+                } elseif ($key.Key -eq 'Delete') {
+                    if ($cursor -lt $rawInput.Count) {
+                        $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
+                        $temp.RemoveAt($cursor)
+                        if (& $checkValid $temp) {
+                            $rawInput = $temp
+                        }
+                    }
+                } else {
+                    if ($cursor -lt $slots.Count) {
+                        $char = $key.KeyChar
+                        if (-not [char]::IsControl($char)) {
+                            $expectedType = $slots[$cursor].Type
+                            if ($expectedType -eq 'X' -and $char.ToString() -match '^[0-9a-fA-F]$') { $char = [char]::ToUpper($char) }
+                            if ($expectedType -eq 'x' -and $char.ToString() -match '^[0-9a-fA-F]$') { $char = [char]::ToLower($char) }
+
+                            $temp = [System.Collections.Generic.List[char]]::new([char[]]$rawInput.ToArray())
+                            if ($cursor -eq $temp.Count) {
+                                $temp.Add($char)
+                            } else {
+                                $temp[$cursor] = $char
+                            }
+
+                            if (& $checkValid $temp) {
+                                $rawInput = $temp
+                                $cursor++
+                            }
                         }
                     }
                 }
@@ -1153,6 +1284,7 @@ function Read-MaskedInput {
         # Final Draw to remove highlight
         Write-Host "`r$Prompt $displayStr`e[K"
     } finally {
+        Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
         # Restore cursor to its original state
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
@@ -1189,6 +1321,280 @@ function Read-MaskedInput {
         }
         return $finalStr
     }
+}
+
+function Read-Password {
+    <#
+    .SYNOPSIS
+        Prompt for a password without echoing the characters.
+    .DESCRIPTION
+        Reads a password from the console and returns a [SecureString] by
+        default. Each keystroke is rendered as a mask character (or hidden
+        entirely with -HideTyping); Backspace deletes the last character;
+        Enter submits; Escape cancels.
+
+        Cursor navigation (arrow keys, Home/End) is intentionally disabled,
+        matching the conventional password-field UX.
+    .PARAMETER Prompt
+        Label shown before the password field. Default 'Password:'.
+    .PARAMETER MaskChar
+        Character displayed for each typed character. Default '*'.
+    .PARAMETER HideTyping
+        Show nothing as the user types — not even a mask character. Hides
+        the password length from observers.
+    .PARAMETER MinLength
+        Minimum length required before Enter is accepted. Default 1.
+    .PARAMETER MaxLength
+        Maximum length. Additional keystrokes are ignored once reached.
+        0 (default) means unbounded.
+    .PARAMETER Confirm
+        Prompt twice and require both entries to match before returning.
+    .PARAMETER ConfirmPrompt
+        Label for the confirmation field. Default 'Confirm password:'.
+    .PARAMETER MaxAttempts
+        Maximum confirmation attempts before giving up and returning $null.
+        Default 3.
+    .PARAMETER AsPlainText
+        Return a [string] instead of a [SecureString]. The plain text lives
+        in managed memory and may surface in debuggers, crash dumps, or
+        process inspection — prefer the default SecureString when possible.
+    .EXAMPLE
+        PS> $pw = Read-Password
+        Reads a password into a SecureString.
+    .EXAMPLE
+        PS> $pw = Read-Password -Confirm -MinLength 12
+        Asks twice and requires at least 12 characters.
+    .OUTPUTS
+        [SecureString] by default, [string] with -AsPlainText, $null if
+        cancelled or confirmation attempts are exhausted.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Security.SecureString], [string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Password:',
+
+        [Parameter(Position = 1)]
+        [char]$MaskChar = '*',
+
+        [switch]$HideTyping,
+
+        [int]$MinLength = 1,
+
+        [int]$MaxLength = 0,
+
+        [switch]$Confirm,
+
+        [string]$ConfirmPrompt = 'Confirm password:',
+
+        [int]$MaxAttempts = 3,
+
+        [switch]$AsPlainText,
+
+        [switch]$NoColor
+    )
+
+    Assert-InteractiveHost 'Read-Password'
+
+    if ($MinLength -lt 0) { $MinLength = 0 }
+    if ($MaxLength -lt 0) { $MaxLength = 0 }
+    if ($MaxLength -gt 0 -and $MaxLength -lt $MinLength) {
+        throw "Read-Password: -MaxLength ($MaxLength) cannot be less than -MinLength ($MinLength)."
+    }
+    if ($MaxAttempts -lt 1) { $MaxAttempts = 1 }
+
+    # Resolve effective NoColor: explicit switch > env var > colored default.
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+
+    # Inner reader: prompts once, returns a SecureString or $null if Escape.
+    # Stores characters directly in a SecureString from the first keystroke
+    # so plaintext never lives in a managed List[char]/string for longer than
+    # the BSTR unwrap window in -AsPlainText / -Confirm comparison.
+    $readOne = {
+        param([string]$label)
+
+        $sec = [System.Security.SecureString]::new()
+        $running = $true
+        $cancelled = $false
+
+        $originalCursorVisible = $true
+        try {
+            if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+                $originalCursorVisible = $false
+            }
+        } catch {}
+
+        Write-Host "`e[?25l" -NoNewline # Hide real cursor
+        # Enable bracketed paste so the terminal wraps pasted content in
+        # ESC[200~ ... ESC[201~ sentinels. This lets us detect paste vs.
+        # typed input and validate the content as a unit — critical here
+        # because silent corruption of a pasted password (e.g. embedded
+        # newline truncating the buffer) would mismatch -Confirm in a way
+        # that *succeeds* if both pastes are mangled identically, locking
+        # the user out of whatever they just provisioned.
+        Write-Host "`e[?2004h" -NoNewline
+
+        $origCtrlC = [Console]::TreatControlCAsInput
+        [Console]::TreatControlCAsInput = $true
+
+        try {
+            while ($running) {
+                $len = $sec.Length
+
+                if ($noColorOn) {
+                    Write-Host "`r$label " -NoNewline
+                } else {
+                    Write-Host "`r$label " -NoNewline -ForegroundColor Cyan
+                }
+
+                if (-not $HideTyping -and $len -gt 0) {
+                    Write-Host ([string]::new([char]$MaskChar, $len)) -NoNewline
+                }
+
+                # Trailing cursor block so the input position is visible even
+                # with a hidden hardware cursor.
+                if ($noColorOn) {
+                    Write-Host '_' -NoNewline
+                } else {
+                    Write-Host ' ' -NoNewline -BackgroundColor Cyan
+                }
+
+                Write-Host "`e[K" -NoNewline # Clear to end of line
+
+                $evt = Read-KeyOrPaste
+
+                if ($evt.Kind -eq 'Discard') {
+                    # No-op — let the loop redraw and re-read.
+                } elseif ($evt.Kind -eq 'Paste') {
+                    # Sanitation policy: any control character in the body is
+                    # a hard reject. Silently dropping or keeping them risks
+                    # the stored password drifting from what the user thinks
+                    # they pasted, and with -Confirm an identical mangling on
+                    # both pastes would even validate — the worst failure.
+                    if ($evt.HasControlChars) {
+                        if ($noColorOn) {
+                            Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
+                        } else {
+                            Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
+                        }
+                    } else {
+                        foreach ($pc in $evt.Text.GetEnumerator()) {
+                            if ($MaxLength -eq 0 -or $sec.Length -lt $MaxLength) {
+                                $sec.AppendChar($pc)
+                            }
+                        }
+                        if ($evt.TrailingNewline -and $sec.Length -ge $MinLength) {
+                            $running = $false
+                        }
+                    }
+                } else {
+                    $key = $evt.Key
+                    if (Test-ControlC $key) {
+                        throw [System.Management.Automation.PipelineStoppedException]::new()
+                    } elseif ($key.Key -eq 'Enter') {
+                        if ($len -ge $MinLength) { $running = $false }
+                    } elseif ($key.Key -eq 'Escape') {
+                        $cancelled = $true
+                        $running = $false
+                    } elseif ($key.Key -eq 'Backspace') {
+                        if ($len -gt 0) { $sec.RemoveAt($len - 1) }
+                    } else {
+                        $char = $key.KeyChar
+                        if (-not [char]::IsControl($char)) {
+                            if ($MaxLength -eq 0 -or $len -lt $MaxLength) {
+                                $sec.AppendChar($char)
+                            }
+                        }
+                    }
+                }
+            }
+
+            # Final draw: replace the cursor block with a clean line so the
+            # confirmation entry (or any following output) starts cleanly.
+            $finalDisplay = if ($HideTyping) { '' } else { [string]::new([char]$MaskChar, $sec.Length) }
+            Write-Host "`r$label $finalDisplay`e[K"
+        } finally {
+            Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
+            if ($originalCursorVisible) {
+                Write-Host "`e[?25h" -NoNewline
+            }
+            [Console]::TreatControlCAsInput = $origCtrlC
+            Write-Host ""
+        }
+
+        if ($cancelled) {
+            $sec.Dispose()
+            return $null
+        }
+
+        $sec.MakeReadOnly()
+        return $sec
+    }
+
+    # Compare two SecureStrings via short-lived BSTR unwrap. The .NET string
+    # produced by PtrToStringBSTR sits in managed memory and cannot be zeroed
+    # — a fundamental SecureString limitation in .NET — but the BSTRs
+    # themselves are zeroed in finally.
+    $compareSecure = {
+        param([System.Security.SecureString]$a, [System.Security.SecureString]$b)
+        if ($a.Length -ne $b.Length) { return $false }
+        $bstrA = [IntPtr]::Zero
+        $bstrB = [IntPtr]::Zero
+        try {
+            $bstrA = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($a)
+            $bstrB = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($b)
+            $strA = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstrA)
+            $strB = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstrB)
+            return [string]::Equals($strA, $strB, [StringComparison]::Ordinal)
+        } finally {
+            if ($bstrA -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstrA) }
+            if ($bstrB -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstrB) }
+        }
+    }
+
+    $first = & $readOne $Prompt
+    if ($null -eq $first) { return $null }
+
+    if ($Confirm) {
+        $attempt = 0
+        $confirmed = $false
+        while (-not $confirmed) {
+            $second = & $readOne $ConfirmPrompt
+            if ($null -eq $second) {
+                $first.Dispose()
+                return $null
+            }
+            if (& $compareSecure $first $second) {
+                $second.Dispose()
+                $confirmed = $true
+                break
+            }
+            $second.Dispose()
+            $attempt++
+            if ($noColorOn) {
+                Write-Host "Passwords did not match. Try again."
+            } else {
+                Write-Host "Passwords did not match. Try again." -ForegroundColor Red
+            }
+            if ($attempt -ge $MaxAttempts) {
+                $first.Dispose()
+                return $null
+            }
+        }
+    }
+
+    if ($AsPlainText) {
+        $bstr = [IntPtr]::Zero
+        try {
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($first)
+            return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        } finally {
+            if ($bstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+            $first.Dispose()
+        }
+    }
+
+    return $first
 }
 
 function Read-ValidatedInput {
@@ -1242,6 +1648,9 @@ function Read-ValidatedInput {
     } catch {}
 
     Write-Host "`e[?25l" -NoNewline # Hide real cursor
+    # Enable bracketed paste so pasted content is delivered as one validated
+    # unit instead of streaming through the per-char Enter handler.
+    Write-Host "`e[?2004h" -NoNewline
 
     $origCtrlC = [Console]::TreatControlCAsInput
     [Console]::TreatControlCAsInput = $true
@@ -1300,38 +1709,67 @@ function Read-ValidatedInput {
             Write-Host "`e[K" -NoNewline # Clear to end of line
 
             # Handle Input
-            $key = [Console]::ReadKey($true)
+            $evt = Read-KeyOrPaste
 
-            if (Test-ControlC $key) {
-                throw [System.Management.Automation.PipelineStoppedException]::new()
-            } elseif ($key.Key -eq 'LeftArrow') {
-                if ($cursor -gt 0) { $cursor-- }
-            } elseif ($key.Key -eq 'RightArrow') {
-                if ($cursor -lt $rawInput.Count) { $cursor++ }
-            } elseif ($key.Key -eq 'Home') {
-                $cursor = 0
-            } elseif ($key.Key -eq 'End') {
-                $cursor = $rawInput.Count
-            } elseif ($key.Key -eq 'Backspace') {
-                if ($cursor -gt 0) {
-                    $rawInput.RemoveAt($cursor - 1)
-                    $cursor--
+            if ($evt.Kind -eq 'Discard') {
+                # No-op — let the loop redraw and re-read.
+            } elseif ($evt.Kind -eq 'Paste') {
+                # Sanitation: reject the whole paste if it contains any
+                # control character in the body. Same rule as Read-Password /
+                # Read-MaskedInput — fail visibly rather than silently mangle.
+                if ($evt.HasControlChars) {
+                    if ($noColorOn) {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
+                    } else {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
+                    }
+                } else {
+                    foreach ($pc in $evt.Text.GetEnumerator()) {
+                        $rawInput.Insert($cursor, $pc)
+                        $cursor++
+                    }
+                    # Trailing newline acts like Enter — auto-submit if the
+                    # buffer matches the pattern (or is empty under -AllowEmpty).
+                    if ($evt.TrailingNewline) {
+                        $newStr = -join $rawInput
+                        $stillValid = ($newStr -match $Pattern)
+                        if ($AllowEmpty -and $newStr.Length -eq 0) { $stillValid = $true }
+                        if ($stillValid) { $running = $false }
+                    }
                 }
-            } elseif ($key.Key -eq 'Delete') {
-                if ($cursor -lt $rawInput.Count) {
-                    $rawInput.RemoveAt($cursor)
-                }
-            } elseif ($key.Key -eq 'Enter') {
-                if ($isValid) { $running = $false }
-            } elseif ($key.Key -eq 'Escape') {
-                $rawInput.Clear()
-                $running = $false
             } else {
-                $char = $key.KeyChar
-                # Filter out control characters (like tab, etc)
-                if (-not [char]::IsControl($char)) {
-                    $rawInput.Insert($cursor, $char)
-                    $cursor++
+                $key = $evt.Key
+                if (Test-ControlC $key) {
+                    throw [System.Management.Automation.PipelineStoppedException]::new()
+                } elseif ($key.Key -eq 'LeftArrow') {
+                    if ($cursor -gt 0) { $cursor-- }
+                } elseif ($key.Key -eq 'RightArrow') {
+                    if ($cursor -lt $rawInput.Count) { $cursor++ }
+                } elseif ($key.Key -eq 'Home') {
+                    $cursor = 0
+                } elseif ($key.Key -eq 'End') {
+                    $cursor = $rawInput.Count
+                } elseif ($key.Key -eq 'Backspace') {
+                    if ($cursor -gt 0) {
+                        $rawInput.RemoveAt($cursor - 1)
+                        $cursor--
+                    }
+                } elseif ($key.Key -eq 'Delete') {
+                    if ($cursor -lt $rawInput.Count) {
+                        $rawInput.RemoveAt($cursor)
+                    }
+                } elseif ($key.Key -eq 'Enter') {
+                    if ($isValid) { $running = $false }
+                } elseif ($key.Key -eq 'Escape') {
+                    $rawInput.Clear()
+                    $running = $false
+                } else {
+                    $char = $key.KeyChar
+                    # Filter out control characters (like tab, etc)
+                    if (-not [char]::IsControl($char)) {
+                        $rawInput.Insert($cursor, $char)
+                        $cursor++
+                    }
                 }
             }
         }
@@ -1339,6 +1777,7 @@ function Read-ValidatedInput {
         $finalStr = -join $rawInput
         Write-Host "`r$Prompt $finalStr`e[K"
     } finally {
+        Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
         # Restore cursor to its original state
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline
@@ -1465,6 +1904,219 @@ function Read-Confirmation {
     return $result
 }
 
+function Read-Choice {
+    <#
+    .SYNOPSIS
+        One-line N-option selector with optional multi-select.
+    .DESCRIPTION
+        Renders a question and a horizontal list of 2-9 options on a single
+        line. Navigate with Left/Right (Tab also moves forward); press a
+        digit key 1-N to jump. Enter confirms; Escape returns $null.
+
+        In single-select mode, pressing a digit commits immediately
+        (matching the Y/N shortcut in Read-Confirmation). In -MultiSelect
+        mode, Space toggles the focused option's checked state, digit keys
+        move focus only, and Enter returns the array of selected labels.
+
+        Options are always numbered ("1.Apple  2.Banana  ...") so digit-key
+        selection is discoverable. Focus is shown by background color in
+        the default mode; in -NoColor mode the focused option is prefixed
+        with '> ' to keep layout stable as focus moves. Multi-select uses
+        the module's radio glyphs (Unicode '●'/'○' or ASCII '[x]'/'[ ]').
+
+        For longer lists, searchable selection, or screen-filling menus,
+        use Get-PaginatedSelection or Invoke-NestedMenu instead — this
+        function is intentionally narrow for short inline prompts.
+    .PARAMETER Question
+        Required. Label shown before the options.
+    .PARAMETER Options
+        Required. 2-9 option labels. Labels should be short enough to fit
+        on one line at the user's terminal width.
+    .PARAMETER Default
+        Initial focused-option index (0-based). Default 0.
+    .PARAMETER MultiSelect
+        Allow toggling multiple options with Space; Enter returns an
+        array of selected labels.
+    .PARAMETER PreSelected
+        Initial checked indices (0-based) for -MultiSelect. Ignored
+        otherwise. Out-of-range indices are silently dropped.
+    .EXAMPLE
+        PS> Read-Choice -Question 'Pick a color:' -Options 'Red','Green','Blue'
+        Returns 'Red', 'Green', or 'Blue' — or $null if cancelled.
+    .EXAMPLE
+        PS> Read-Choice -Question 'Toppings:' -Options 'Cheese','Pepperoni','Mushroom','Olives' -MultiSelect
+        Returns an array of selected toppings (possibly empty), or $null
+        if cancelled.
+    .OUTPUTS
+        [string] selected label in single-select; [string[]] in -MultiSelect;
+        $null if cancelled.
+    #>
+    [CmdletBinding()]
+    [OutputType([string], [string[]])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Question,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateCount(2, 9)]
+        [string[]]$Options,
+
+        [int]$Default = 0,
+
+        [switch]$MultiSelect,
+
+        [int[]]$PreSelected,
+
+        [switch]$NoColor
+    )
+
+    Assert-InteractiveHost 'Read-Choice'
+
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $glyphs = Get-Glyphs $script:_AsciiMode
+
+    $count = $Options.Count
+    $focus = $Default
+    if ($focus -lt 0 -or $focus -ge $count) { $focus = 0 }
+
+    # Multi-select checked state. Use a fixed-size [bool[]] so strict mode
+    # is happy with index access; pre-seed from -PreSelected (ignoring
+    # out-of-range indices silently — callers wiring up dynamic option
+    # lists shouldn't have to filter defensively).
+    $checked = New-Object 'bool[]' $count
+    if ($MultiSelect -and $PreSelected) {
+        foreach ($i in $PreSelected) {
+            if ($i -ge 0 -and $i -lt $count) { $checked[$i] = $true }
+        }
+    }
+
+    $running = $true
+    $result = $null
+    # Track the multi-select selection as a flat array for the final echo;
+    # $result wraps it via the unary-comma trick to preserve array shape
+    # through the pipeline, which makes it unusable for direct -join.
+    $selLabels = @()
+
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+
+    Write-Host "`e[?25l" -NoNewline # Hide real cursor
+
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
+    try {
+        while ($running) {
+            if ($noColorOn) {
+                Write-Host "`r$Question " -NoNewline
+            } else {
+                Write-Host "`r$Question " -NoNewline -ForegroundColor Cyan
+            }
+
+            for ($i = 0; $i -lt $count; $i++) {
+                $isFocused = ($i -eq $focus)
+                $isChecked = $MultiSelect -and $checked[$i]
+
+                # Inter-option separator: two spaces between items keeps the
+                # one-line layout readable without a heavyweight delimiter.
+                if ($i -gt 0) { Write-Host '  ' -NoNewline }
+
+                # NoColor focus marker: '> ' before the focused option, two
+                # spaces before every other option, so column alignment is
+                # stable across arrow-key moves. Color mode skips this slot
+                # entirely since bg highlight makes focus self-evident.
+                if ($noColorOn) {
+                    if ($isFocused) { Write-Host '> ' -NoNewline } else { Write-Host '  ' -NoNewline }
+                }
+
+                $marker = ''
+                if ($MultiSelect) {
+                    $marker = if ($isChecked) { "$($glyphs.RadioOn) " } else { "$($glyphs.RadioOff) " }
+                }
+
+                $label = "$marker$($i + 1).$($Options[$i])"
+
+                if ($noColorOn -or -not $isFocused) {
+                    Write-Host $label -NoNewline
+                } else {
+                    Write-Host $label -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                }
+            }
+
+            Write-Host "`e[K" -NoNewline # Clear to end of line
+
+            $key = [Console]::ReadKey($true)
+
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            } elseif ($key.Key -eq 'LeftArrow') {
+                if ($focus -gt 0) { $focus-- }
+            } elseif ($key.Key -eq 'RightArrow' -or $key.Key -eq 'Tab') {
+                if ($focus -lt $count - 1) { $focus++ }
+            } elseif ($key.Key -eq 'Home') {
+                $focus = 0
+            } elseif ($key.Key -eq 'End') {
+                $focus = $count - 1
+            } elseif ($key.Key -eq 'Spacebar' -and $MultiSelect) {
+                $checked[$focus] = -not $checked[$focus]
+            } elseif ($key.Key -eq 'Enter') {
+                if ($MultiSelect) {
+                    $selLabels = @()
+                    for ($i = 0; $i -lt $count; $i++) {
+                        if ($checked[$i]) { $selLabels += $Options[$i] }
+                    }
+                    $result = ,$selLabels
+                } else {
+                    $result = $Options[$focus]
+                }
+                $running = $false
+            } elseif ($key.Key -eq 'Escape') {
+                $result = $null
+                $running = $false
+            } else {
+                # Digit-key hotkey: 1..N. In single-select, commit and exit;
+                # in multi-select, move focus (Space then toggles).
+                $c = $key.KeyChar
+                if ($c -ge '1' -and $c -le '9') {
+                    $idx = [int]([string]$c) - 1
+                    if ($idx -lt $count) {
+                        $focus = $idx
+                        if (-not $MultiSelect) {
+                            $result = $Options[$focus]
+                            $running = $false
+                        }
+                    }
+                }
+            }
+        }
+
+        # Final draw: echo the chosen value(s) so the prompt line records
+        # the answer above any subsequent output, matching Read-Confirmation.
+        $echo = ''
+        if ($null -eq $result) {
+            $echo = $script:_Strings.Status_Cancelled
+        } elseif ($MultiSelect) {
+            if ($selLabels.Count -eq 0) { $echo = '(none)' }
+            else { $echo = ($selLabels -join ', ') }
+        } else {
+            $echo = $result
+        }
+        Write-Host "`r$Question $echo`e[K"
+    } finally {
+        if ($originalCursorVisible) {
+            Write-Host "`e[?25h" -NoNewline
+        }
+        [Console]::TreatControlCAsInput = $origCtrlC
+        Write-Host ""
+    }
+
+    return $result
+}
+
 function Show-Spinner {
     <#
     .SYNOPSIS
@@ -1500,7 +2152,14 @@ function Show-Spinner {
     .PARAMETER ShowTimer
         Append a live elapsed-time counter to the activity line. Format
         narrows as time grows: `(1.2s)` under a minute, `(2m 34s)` under
-        an hour, `(1h 23m)` beyond.
+        an hour, `(1h 23m)` beyond. Orthogonal to -ElapsedVariable: this
+        controls on-screen display while the spinner runs.
+    .PARAMETER ElapsedVariable
+        Name (no `$`) of a variable in the caller's scope to receive the
+        total elapsed time as a [TimeSpan] after the spinner exits.
+        Mirrors PowerShell's -OutVariable / -ErrorVariable convention.
+        The spinner line is erased on exit in interactive (VT) mode, so
+        capture this if you want to render "fetched in 2.3s" yourself.
     .EXAMPLE
         PS> $baseUrl = 'https://api.example.com'
         PS> $users = Show-Spinner -Activity "Fetching users..." -ScriptBlock {
@@ -1512,6 +2171,12 @@ function Show-Spinner {
                 Compress-Archive -Path C:\Data -DestinationPath backup.zip
             }
         Live timer reassures the user that long ops aren't hung.
+    .EXAMPLE
+        PS> $users = Show-Spinner -Activity "Fetching" -ElapsedVariable el -ScriptBlock {
+                Invoke-RestMethod $url
+            }
+        PS> Write-Host "$($users.Count) users in $('{0:F1}s' -f $el.TotalSeconds)"
+        Spinner is gone; the caller composes whatever post-line they want.
     .OUTPUTS
         Whatever the scriptblock returned.
     #>
@@ -1530,6 +2195,8 @@ function Show-Spinner {
         [switch]$NoColor,
 
         [switch]$ShowTimer,
+
+        [string]$ElapsedVariable,
 
         [switch]$Ascii
     )
@@ -1563,6 +2230,13 @@ function Show-Spinner {
                 '{0}h {1}m' -f [int]$t.TotalHours, $t.Minutes
             }
             Write-Host "[ $Activity $($script:_Strings.Status_DoneIn) $elapsed ]"
+            if ($ElapsedVariable) {
+                # Modules have isolated scope, so -Scope 1 lands in module
+                # scope, not the caller's. SessionState.PSVariable.Set on
+                # $PSCmdlet targets the actual invoker, matching how
+                # -OutVariable / -ErrorVariable behave across module bounds.
+                $PSCmdlet.SessionState.PSVariable.Set($ElapsedVariable, $t)
+            }
         }
         return
     }
@@ -1592,10 +2266,13 @@ function Show-Spinner {
     # and makes the background sleep interruptible — Stop returns immediately
     # rather than waiting out the cadence.
     $stopSignal = [System.Threading.ManualResetEventSlim]::new($false)
-    # Stopwatch started just before the runspace launches so the displayed
-    # elapsed time matches the user's perceived wait — not including our
-    # own setup overhead.
-    $stopwatch = if ($ShowTimer) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
+    # Stopwatch started just before the runspace launches so the elapsed
+    # time matches the user's perceived wait — not including our own setup
+    # overhead. Always running so -ElapsedVariable has a value to return;
+    # only handed to the ticker when -ShowTimer wants the live counter on
+    # screen.
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $tickerStopwatch = if ($ShowTimer) { $stopwatch } else { $null }
     $tickPS = [powershell]::Create()
     [void]$tickPS.AddScript({
         param($frames, $intervalMs, $activity, $stop, $useColor, $sw, $buffer)
@@ -1643,7 +2320,7 @@ function Show-Spinner {
     [void]$tickPS.AddArgument($Activity)
     [void]$tickPS.AddArgument($stopSignal)
     [void]$tickPS.AddArgument(-not $noColorOn)
-    [void]$tickPS.AddArgument($stopwatch)
+    [void]$tickPS.AddArgument($tickerStopwatch)
     [void]$tickPS.AddArgument($script:_SpinnerBuffer)
 
     $script:_SpinnerActive = $true
@@ -1660,9 +2337,13 @@ function Show-Spinner {
         }
         $tickPS.Dispose()
         $stopSignal.Dispose()
+        $stopwatch.Stop()
         $script:_SpinnerActive = $false
         if ($originalCursorVisible) {
             Write-Host "`e[?25h" -NoNewline # restore cursor
+        }
+        if ($ElapsedVariable) {
+            $PSCmdlet.SessionState.PSVariable.Set($ElapsedVariable, $stopwatch.Elapsed)
         }
     }
 }
@@ -2057,4 +2738,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-ValidatedInput, Read-Confirmation, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch
+Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch

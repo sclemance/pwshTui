@@ -159,6 +159,34 @@ function Show-MaskedInputDemo {
     Wait-ReturnKey
 }
 
+function Show-PasswordDemo {
+    Write-DemoHeader "Read-Password"
+    Write-Host "Type to enter; Backspace deletes; Enter submits; Esc cancels." -ForegroundColor DarkGray
+
+    $sec = Read-Password -Prompt "Password:" -MinLength 4
+    if ($sec) {
+        Write-Host "Captured SecureString of length $($sec.Length)." -ForegroundColor Green
+    } else {
+        Write-Host "Cancelled." -ForegroundColor Yellow
+    }
+
+    $confirmed = Read-Password -Prompt "New password:" -Confirm -MinLength 8 -ConfirmPrompt "Retype:"
+    if ($confirmed) {
+        Write-Host "Confirmed SecureString of length $($confirmed.Length)." -ForegroundColor Green
+    } else {
+        Write-Host "Cancelled or attempts exhausted." -ForegroundColor Yellow
+    }
+
+    $plain = Read-Password -Prompt "PIN (hidden length):" -HideTyping -AsPlainText -MinLength 4 -MaxLength 6
+    if ($plain) {
+        Write-Host "Captured plain text: $plain" -ForegroundColor Green
+    } else {
+        Write-Host "Cancelled." -ForegroundColor Yellow
+    }
+
+    Wait-ReturnKey
+}
+
 function Show-ValidatedInputDemo {
     Write-DemoHeader "Read-ValidatedInput"
     $ipv4 = Read-ValidatedInput -Prompt "IPv4 Address:" -Pattern '^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
@@ -177,6 +205,24 @@ function Show-ConfirmationDemo {
     if ($null -eq $delete) { Write-Host "Cancelled (returned `$null)." -ForegroundColor Yellow }
     elseif ($delete)       { Write-Host "Confirmed: Yes" -ForegroundColor Green }
     else                   { Write-Host "Confirmed: No"  -ForegroundColor Green }
+    Wait-ReturnKey
+}
+
+function Show-ChoiceDemo {
+    Write-DemoHeader "Read-Choice"
+    Write-Host "Arrow keys or digit 1-N to move; Enter to confirm; Esc to cancel." -ForegroundColor DarkGray
+
+    $color = Read-Choice -Question "Pick a color:" -Options 'Red','Green','Blue','Yellow','Magenta'
+    if ($null -eq $color) { Write-Host "Cancelled." -ForegroundColor Yellow }
+    else                   { Write-Host "Captured: $color" -ForegroundColor Green }
+
+    Write-Host ""
+    Write-Host "Multi-select: Space toggles, digits move focus, Enter returns the array." -ForegroundColor DarkGray
+    $toppings = Read-Choice -Question "Pick toppings:" -Options 'Cheese','Pepperoni','Mushroom','Olives','Onion' -MultiSelect -PreSelected 0
+    if ($null -eq $toppings)        { Write-Host "Cancelled." -ForegroundColor Yellow }
+    elseif ($toppings.Count -eq 0)  { Write-Host "Captured: (none)" -ForegroundColor Green }
+    else                            { Write-Host "Captured: $($toppings -join ', ')" -ForegroundColor Green }
+
     Wait-ReturnKey
 }
 
@@ -249,8 +295,10 @@ while ($running) {
         )}
         @{ Label = "Input Prompts"; Children = @(
             @{ Label = "Masked Input (phone, MAC)";                        Value = "masked" }
+            @{ Label = "Password Input (SecureString, confirm, PIN)";      Value = "password" }
             @{ Label = "Validated Input (IPv4, CIDR, email)";              Value = "validated" }
             @{ Label = "Yes/No Confirmation";                              Value = "confirm" }
+            @{ Label = "Choice Selector (single + multi)";                 Value = "choice" }
         )}
         @{ Label = "Async & Layout"; Children = @(
             @{ Label = "Show-Spinner (default Braille)";                   Value = "spinner" }
@@ -279,8 +327,10 @@ while ($running) {
         'nested_deep'       { Show-NestedMenuDeepDemo }
         'nested_bordered'   { Show-NestedMenuBorderedDemo }
         'masked'            { Show-MaskedInputDemo }
+        'password'          { Show-PasswordDemo }
         'validated'         { Show-ValidatedInputDemo }
         'confirm'           { Show-ConfirmationDemo }
+        'choice'            { Show-ChoiceDemo }
         'spinner'           { Show-SpinnerDemo }
         'spinner_timer'     { Show-SpinnerTimerDemo }
         'spinner_styles'    { Show-SpinnerStylesDemo }
