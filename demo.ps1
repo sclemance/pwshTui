@@ -271,9 +271,9 @@ function Show-SpinnerClosureDemo {
 }
 
 function Show-UIBoxDemo {
-    Write-DemoHeader "Write-UIBox (standalone)"
+    Write-DemoHeader "Write-TuiBox (standalone)"
     $ui = Get-DemoUI
-    Write-UIBox -Header "System Status" -Body @("CPU: 12%","RAM: 4.2GB","Disk: 80% Full") -Footer "Demo box" -Border @ui
+    Write-TuiBox -Header "System Status" -Body @("CPU: 12%","RAM: 4.2GB","Disk: 80% Full") -Footer "Demo box" -Border @ui
     Wait-ReturnKey
 }
 
@@ -305,7 +305,7 @@ while ($running) {
             @{ Label = "Show-Spinner with -ShowTimer";                     Value = "spinner_timer" }
             @{ Label = "Show-Spinner — all six styles";                    Value = "spinner_styles" }
             @{ Label = "Show-Spinner — closure capture";                   Value = "spinner_closure" }
-            @{ Label = "Write-UIBox (standalone)";                         Value = "uibox" }
+            @{ Label = "Write-TuiBox (standalone)";                         Value = "uibox" }
         )}
         @{ Label = "Toggle Render Mode (currently: $modeLabel)";           Value = "toggle_ascii" }
         @{ Label = "Change Language (currently: $script:demoCulture)"; Children = @(

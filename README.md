@@ -293,7 +293,7 @@ $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -Initia
 
 ---
 
-### 8. `Write-UIBox`
+### 8. `Write-TuiBox`
 The underlying layout engine used by the interactive functions, also available for standalone use.
 
 **Features:**
@@ -315,7 +315,7 @@ The underlying layout engine used by the interactive functions, also available f
 
 **Example:**
 ```powershell
-Write-UIBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
+Write-TuiBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 ---
 
 ### 9. `Measure-FuzzyMatch`
@@ -428,13 +428,13 @@ Two cross-cutting rendering switches are available on every function where they 
 
 | Unicode | ASCII | Used in |
 |---|---|---|
-| `─ ┌ ┐ └ ┘ ├ ┤ │` | `- + + + + + + \|` | `Write-UIBox` borders + section rules |
+| `─ ┌ ┐ └ ┘ ├ ┤ │` | `- + + + + + + \|` | `Write-TuiBox` borders + section rules |
 | `← →` | `<- ->` | footers of paginated selection / nested menu |
 | `↑↓` | `^v` | footers of paginated selection / nested menu |
 | `►` | `>` | `Invoke-NestedMenu` child indicator |
 | Braille `⠋⠙⠹...` | `\| / - \\` | `Show-Spinner` — `-Ascii` forces `-Style Ascii` |
 
-Available on: `Write-UIBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`.
+Available on: `Write-TuiBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`.
 
 **`-NoColor`** — Disable ANSI color/styling. Visual affordances are preserved via bracket fallbacks:
 

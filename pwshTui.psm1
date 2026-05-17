@@ -457,8 +457,8 @@ function Measure-FuzzyMatch {
     return [int][Math]::Max($jwScore * $jwBias, $subseqScore * $subBias)
 }
 
-# --- Internal helpers used by Write-UIBox ---
-# Module-private (not exported). Hoisted out of Write-UIBox so they're defined
+# --- Internal helpers used by Write-TuiBox ---
+# Module-private (not exported). Hoisted out of Write-TuiBox so they're defined
 # once at module load instead of re-created on every render call.
 
 $script:_AnsiRegex = "\e\[[0-9;]*[a-zA-Z]"
@@ -493,7 +493,7 @@ function Get-VisibleSubstring ([string]$s, [int]$maxVisibleLen) {
     return $sb.ToString()
 }
 
-function Write-UIBox {
+function Write-TuiBox {
     <#
     .SYNOPSIS
         Render a header/body/footer text block with optional Unicode border.
@@ -519,8 +519,6 @@ function Write-UIBox {
         Absolute column to render at. -1 = current cursor position.
     .PARAMETER Y
         Absolute row to render at. -1 = current cursor position.
-    .PARAMETER AltScreen
-        Reserved; the caller controls alt-screen mode.
     .PARAMETER SectionRules
         Draw a horizontal rule between sections (header→body, body→footer)
         when not in -Border mode. In -Border mode the existing connector
@@ -546,7 +544,6 @@ function Write-UIBox {
         [int]$MaxWidth = 0,
         [int]$X = -1,
         [int]$Y = -1,
-        [switch]$AltScreen,
         [switch]$SectionRules,
         [switch]$Ascii
     )
@@ -868,7 +865,7 @@ function Get-PaginatedSelection {
             $footer = @($footerLines)
 
             # Draw using UIBox
-            $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
+            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
                                       -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
                                       -SectionRules -Ascii:$asciiOn
 
@@ -2621,7 +2618,7 @@ function Invoke-NestedMenu {
             $footer = @("$($g.ArrowsUpDown) $($s.Footer_Move)   $($g.ArrowRight) $($s.Footer_Expand)   $($g.ArrowLeft) $($s.Footer_Back)   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Exit)")
 
             # Draw using UIBox
-            $newHeight = Write-UIBox -Header $header -Body $body -Footer $footer `
+            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
                                       -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
                                       -SectionRules -Ascii:$asciiOn
 
@@ -2738,4 +2735,4 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-UIBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch
+Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch

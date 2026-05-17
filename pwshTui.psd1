@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.5.0'
+    ModuleVersion        = '0.6.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
     Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-UIBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,22 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.6.0
+- BREAKING: Write-UIBox renamed to Write-TuiBox. Aligns with the
+  module's `Tui` namespace (matches Read-* / Show-* / Get-*
+  conventions; the standalone `UI` prefix was a leftover from before
+  the rename to pwshTui). No backward-compat alias — callers update
+  their function name. The function's behavior, parameters (minus the
+  removed -AltScreen, see below), and return value are unchanged.
+- Removed -AltScreen parameter from Write-TuiBox. The switch was
+  declared but never wired up — a vestigial placeholder with doc that
+  said "Reserved; the caller controls alt-screen mode." Write-TuiBox is
+  a stateless one-shot renderer; alt-screen is a stateful mode toggle
+  meaningful only to interactive widgets that own the screen for the
+  duration of input (Get-PaginatedSelection / Invoke-NestedMenu still
+  have their working -AltScreen). Dropping the dead parameter
+  simplifies the API.
+
 0.5.0
 - Read-Password: new masked-password prompt returning [SecureString]
   by default ([string] under -AsPlainText). Chars go straight into a
