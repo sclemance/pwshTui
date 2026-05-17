@@ -1328,6 +1328,62 @@ function Read-MaskedInput {
     }
 }
 
+function Get-PasswordStrength {
+    # Internal: derive a strength record from a class-tracking list —
+    # markers only ('L' lower, 'U' upper, 'D' digit, 'S' other), never the
+    # actual characters. Read-Password maintains this list in parallel
+    # with the SecureString so strength can be scored without ever
+    # unwrapping the SecureString to plaintext.
+    #
+    # Score model (0-6): one point each for length>=8, >=12, >=16, and one
+    # each for >=2, >=3, >=4 distinct character classes. Bands:
+    #   0-1: Weak    2-3: Fair    4: Good    5-6: Strong
+    # Deliberately simple — meant as a visible hint and a programmable
+    # metadata bucket, not a cryptographic strength guarantee.
+    #
+    # Returns a PSCustomObject so callers can render the Label themselves,
+    # branch on the Score, gate on Length/Classes, etc. Color is included
+    # for the in-function render path but harmless for downstream callers.
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[char]]$ClassList
+    )
+    $length = $ClassList.Count
+    if ($length -eq 0) {
+        return [PSCustomObject]@{
+            Label = ''; Score = 0; Length = 0; Classes = 0; Color = 'White'
+        }
+    }
+    $hasL = $ClassList -contains 'L'
+    $hasU = $ClassList -contains 'U'
+    $hasD = $ClassList -contains 'D'
+    $hasS = $ClassList -contains 'S'
+    $classCount = [int]$hasL + [int]$hasU + [int]$hasD + [int]$hasS
+
+    $score = 0
+    if ($length -ge 8)       { $score++ }
+    if ($length -ge 12)      { $score++ }
+    if ($length -ge 16)      { $score++ }
+    if ($classCount -ge 2)   { $score++ }
+    if ($classCount -ge 3)   { $score++ }
+    if ($classCount -ge 4)   { $score++ }
+
+    $label = ''
+    $color = 'White'
+    if     ($score -le 1) { $label = 'Weak';   $color = 'Red' }
+    elseif ($score -le 3) { $label = 'Fair';   $color = 'Yellow' }
+    elseif ($score -le 4) { $label = 'Good';   $color = 'Cyan' }
+    else                  { $label = 'Strong'; $color = 'Green' }
+
+    return [PSCustomObject]@{
+        Label   = $label
+        Score   = $score
+        Length  = $length
+        Classes = $classCount
+        Color   = $color
+    }
+}
+
 function Read-Password {
     <#
     .SYNOPSIS
@@ -1363,6 +1419,26 @@ function Read-Password {
         Return a [string] instead of a [SecureString]. The plain text lives
         in managed memory and may surface in debuggers, crash dumps, or
         process inspection — prefer the default SecureString when possible.
+    .PARAMETER ShowStrength
+        Append a live strength indicator (Weak / Fair / Good / Strong) to
+        the right of the masked input. Useful when prompting the user to
+        *create* a password — gives immediate feedback as they type. Score
+        is computed from length thresholds (8 / 12 / 16) and character-
+        class diversity (lower / upper / digit / symbol) without ever
+        unwrapping the SecureString — a parallel marker-only list (e.g.
+        'L','U','D','S' rather than the actual chars) is maintained in
+        sync with the SecureString. Only shown on the first prompt; the
+        -Confirm second prompt suppresses it (re-typing has no new
+        strength to convey).
+    .PARAMETER StrengthVariable
+        Name (no `$`) of a variable in the caller's scope to receive the
+        final strength record as a [PSCustomObject] with fields:
+        Label / Score / Length / Classes / Color. Mirrors -OutVariable /
+        -ErrorVariable / -ElapsedVariable convention. Independent of
+        -ShowStrength: -ShowStrength controls on-screen display while
+        -StrengthVariable controls programmable capture. Useful for
+        callers that want to gate downstream policy on score (e.g. reject
+        anything below 'Good' from being persisted to a password store).
     .EXAMPLE
         PS> $pw = Read-Password
         Reads a password into a SecureString.
@@ -1396,6 +1472,10 @@ function Read-Password {
 
         [switch]$AsPlainText,
 
+        [switch]$ShowStrength,
+
+        [string]$StrengthVariable,
+
         [switch]$NoColor
     )
 
@@ -1416,9 +1496,14 @@ function Read-Password {
     # so plaintext never lives in a managed List[char]/string for longer than
     # the BSTR unwrap window in -AsPlainText / -Confirm comparison.
     $readOne = {
-        param([string]$label)
+        param([string]$label, [bool]$showStrengthForThis)
 
         $sec = [System.Security.SecureString]::new()
+        # Marker-only shadow of the SecureString — one char per slot,
+        # 'L'/'U'/'D'/'S' (lower/upper/digit/symbol-or-other). Mutated in
+        # lockstep with $sec on every append/remove. Lets Get-PasswordStrength
+        # score the password without unwrapping the SecureString to plaintext.
+        $classes = [System.Collections.Generic.List[char]]::new()
         $running = $true
         $cancelled = $false
 
@@ -1464,6 +1549,18 @@ function Read-Password {
                     Write-Host ' ' -NoNewline -BackgroundColor Cyan
                 }
 
+                # Strength indicator (after the cursor block so the typing
+                # position stays visually adjacent to the chars). Skipped on
+                # the -Confirm second prompt and when the buffer is empty.
+                if ($showStrengthForThis -and $classes.Count -gt 0) {
+                    $strength = Get-PasswordStrength -ClassList $classes
+                    if ($noColorOn) {
+                        Write-Host "  ($($strength.Label))" -NoNewline
+                    } else {
+                        Write-Host "  ($($strength.Label))" -NoNewline -ForegroundColor $strength.Color
+                    }
+                }
+
                 Write-Host "`e[K" -NoNewline # Clear to end of line
 
                 $evt = Read-KeyOrPaste
@@ -1486,6 +1583,14 @@ function Read-Password {
                         foreach ($pc in $evt.Text.GetEnumerator()) {
                             if ($MaxLength -eq 0 -or $sec.Length -lt $MaxLength) {
                                 $sec.AppendChar($pc)
+                                # Mirror into the class-tracking list. We
+                                # store only the *class* of each char — the
+                                # plaintext never lives outside the SecureString.
+                                $cls = if ([char]::IsLower($pc)) { 'L' }
+                                       elseif ([char]::IsUpper($pc)) { 'U' }
+                                       elseif ([char]::IsDigit($pc)) { 'D' }
+                                       else { 'S' }
+                                $classes.Add($cls)
                             }
                         }
                         if ($evt.TrailingNewline -and $sec.Length -ge $MinLength) {
@@ -1502,12 +1607,20 @@ function Read-Password {
                         $cancelled = $true
                         $running = $false
                     } elseif ($key.Key -eq 'Backspace') {
-                        if ($len -gt 0) { $sec.RemoveAt($len - 1) }
+                        if ($len -gt 0) {
+                            $sec.RemoveAt($len - 1)
+                            $classes.RemoveAt($classes.Count - 1)
+                        }
                     } else {
                         $char = $key.KeyChar
                         if (-not [char]::IsControl($char)) {
                             if ($MaxLength -eq 0 -or $len -lt $MaxLength) {
                                 $sec.AppendChar($char)
+                                $cls = if ([char]::IsLower($char)) { 'L' }
+                                       elseif ([char]::IsUpper($char)) { 'U' }
+                                       elseif ([char]::IsDigit($char)) { 'D' }
+                                       else { 'S' }
+                                $classes.Add($cls)
                             }
                         }
                     }
@@ -1533,7 +1646,9 @@ function Read-Password {
         }
 
         $sec.MakeReadOnly()
-        return $sec
+        # Bubble the class list out alongside the SecureString so the outer
+        # function can compute / expose strength without re-reading $sec.
+        return [PSCustomObject]@{ Sec = $sec; Classes = $classes }
     }
 
     # Compare two SecureStrings via short-lived BSTR unwrap. The .NET string
@@ -1557,18 +1672,26 @@ function Read-Password {
         }
     }
 
-    $first = & $readOne $Prompt
-    if ($null -eq $first) { return $null }
+    $firstResult = & $readOne $Prompt $ShowStrength
+    if ($null -eq $firstResult) { return $null }
+    $first = $firstResult.Sec
+    $firstClasses = $firstResult.Classes
 
     if ($Confirm) {
         $attempt = 0
         $confirmed = $false
         while (-not $confirmed) {
-            $second = & $readOne $ConfirmPrompt
-            if ($null -eq $second) {
+            # Strength indicator deliberately suppressed on the confirm
+            # prompt — the user has already seen the score for what they
+            # typed, and showing it on a re-type would be misleading
+            # (different score = typo, but we already catch that via the
+            # comparison below).
+            $secondResult = & $readOne $ConfirmPrompt $false
+            if ($null -eq $secondResult) {
                 $first.Dispose()
                 return $null
             }
+            $second = $secondResult.Sec
             if (& $compareSecure $first $second) {
                 $second.Dispose()
                 $confirmed = $true
@@ -1586,6 +1709,15 @@ function Read-Password {
                 return $null
             }
         }
+    }
+
+    # Expose the strength record to the caller if requested. Cross-module
+    # scope handled via $PSCmdlet.SessionState.PSVariable.Set — same trick
+    # as Show-Spinner -ElapsedVariable, because Set-Variable -Scope 1 from
+    # a module function lands in module scope, not the caller's.
+    if ($StrengthVariable) {
+        $strengthRecord = Get-PasswordStrength -ClassList $firstClasses
+        $PSCmdlet.SessionState.PSVariable.Set($StrengthVariable, $strengthRecord)
     }
 
     if ($AsPlainText) {

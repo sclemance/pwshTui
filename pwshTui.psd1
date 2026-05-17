@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.7.0'
+    ModuleVersion        = '0.8.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,28 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.8.0
+- Read-Password gains -ShowStrength: live Weak/Fair/Good/Strong
+  indicator (color-coded red/yellow/cyan/green) appended to the right
+  of the masked input. Score derived from length thresholds (8/12/16)
+  + character-class diversity (lower/upper/digit/symbol). Strength is
+  scored from a parallel marker-only list ('L'/'U'/'D'/'S' rather than
+  the actual chars) maintained in sync with the SecureString — the
+  SecureString is never unwrapped to plaintext for scoring. Suppressed
+  on the -Confirm second prompt (re-typing has no new info to convey).
+- Read-Password gains -StrengthVariable: name (no `$`) of a variable
+  in the caller's scope to receive the strength record as a
+  [PSCustomObject] with Label / Score / Length / Classes / Color.
+  Mirrors -OutVariable / -ElapsedVariable convention. Independent of
+  -ShowStrength: one controls on-screen display, the other controls
+  programmable capture. Useful for gating downstream policy on score
+  (e.g. reject anything below 'Good' from being persisted). Computed
+  unconditionally so the cost of -ShowStrength=$false +
+  -StrengthVariable is the same as -ShowStrength=$true alone.
+- Internal: new private Get-PasswordStrength helper for the scoring;
+  Read-Password's $readOne scriptblock now returns a PSCustomObject
+  carrying the SecureString and its parallel class list together.
+
 0.7.0
 - BREAKING: Write-TuiBox no longer emits the rendered line count to the
   pipeline by default. Pass -PassThru to opt in. Matches the convention

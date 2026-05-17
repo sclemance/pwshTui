@@ -162,15 +162,17 @@ function Show-MaskedInputDemo {
 function Show-PasswordDemo {
     Write-DemoHeader "Read-Password"
     Write-Host "Type to enter; Backspace deletes; Enter submits; Esc cancels." -ForegroundColor DarkGray
+    Write-Host "Strength indicator appears live to the right of the masked input." -ForegroundColor DarkGray
 
-    $sec = Read-Password -Prompt "Password:" -MinLength 4
+    $sec = Read-Password -Prompt "Password:" -MinLength 4 -ShowStrength -StrengthVariable s
     if ($sec) {
         Write-Host "Captured SecureString of length $($sec.Length)." -ForegroundColor Green
+        Write-Host "Strength: $($s.Label) (score $($s.Score)/6, $($s.Classes) char classes)" -ForegroundColor $s.Color
     } else {
         Write-Host "Cancelled." -ForegroundColor Yellow
     }
 
-    $confirmed = Read-Password -Prompt "New password:" -Confirm -MinLength 8 -ConfirmPrompt "Retype:"
+    $confirmed = Read-Password -Prompt "New password:" -Confirm -MinLength 8 -ConfirmPrompt "Retype:" -ShowStrength
     if ($confirmed) {
         Write-Host "Confirmed SecureString of length $($confirmed.Length)." -ForegroundColor Green
     } else {

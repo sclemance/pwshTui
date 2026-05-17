@@ -187,6 +187,8 @@ A masked password prompt that returns a `SecureString` by default. Cursor naviga
 - `-ConfirmPrompt`: Label for the confirmation field. Default: `"Confirm password:"`.
 - `-MaxAttempts`: Maximum mismatched-confirmation attempts before giving up. Default: `3`.
 - `-AsPlainText`: (Switch) Return a `[string]` instead of a `[SecureString]`. The plain text lives in managed memory and may surface in debuggers, crash dumps, or process inspection — prefer the default SecureString when possible.
+- `-ShowStrength`: (Switch) Append a live strength indicator (`Weak` / `Fair` / `Good` / `Strong`, color-coded red/yellow/cyan/green) to the right of the masked input. Score is derived from length thresholds (8 / 12 / 16) plus character-class diversity (lower / upper / digit / symbol). Computed from a parallel marker-only class list (`'L'`/`'U'`/`'D'`/`'S'`) — the SecureString is never unwrapped to plaintext for scoring. Suppressed on the `-Confirm` second prompt. Orthogonal to `-StrengthVariable`: this controls on-screen display.
+- `-StrengthVariable`: Name (no `$`) of a variable in the caller's scope to receive the final strength record as a `[PSCustomObject]` with `Label` / `Score` / `Length` / `Classes` / `Color`. Mirrors `-OutVariable` / `-ElapsedVariable` convention. Independent of `-ShowStrength`: this controls programmable capture. Useful for gating downstream policy on score (e.g. reject anything below `Good` from being persisted to a password store).
 - `-NoColor`: (Switch) Disable ANSI styling.
 
 **Shortcuts:**
@@ -206,6 +208,11 @@ $pw = Read-Password -Confirm -MinLength 12
 
 # Plain string (less safe but sometimes needed for non-credential string APIs)
 $pin = Read-Password -Prompt "PIN:" -HideTyping -MaxLength 6 -AsPlainText
+
+# Live strength indicator + programmable capture
+$pw = Read-Password -Prompt "Password:" -ShowStrength -StrengthVariable s -MinLength 8
+# After: $s.Label is e.g. 'Strong', $s.Score is 0-6, $s.Classes is 1-4
+if ($s.Score -lt 4) { Write-Warning "Password is weaker than recommended ($($s.Label))" }
 ```
 
 ---
