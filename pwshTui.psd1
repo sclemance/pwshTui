@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.6.0'
+    ModuleVersion        = '0.7.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,17 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.7.0
+- BREAKING: Write-TuiBox no longer emits the rendered line count to the
+  pipeline by default. Pass -PassThru to opt in. Matches the convention
+  for Write-* functions whose primary purpose is side effects
+  (Add-Member -PassThru, Set-ItemProperty -PassThru). Resolves the demo
+  surprise where `Write-TuiBox -Header ... -Body ... -Border` printed a
+  stray integer after the box because nothing captured the return.
+  Internal callers Get-PaginatedSelection and Invoke-NestedMenu pass
+  -PassThru since they use the count for cursor management; standalone
+  callers can drop the capture entirely.
+
 0.6.0
 - BREAKING: Write-UIBox renamed to Write-TuiBox. Aligns with the
   module's `Tui` namespace (matches Read-* / Show-* / Get-*

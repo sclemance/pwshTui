@@ -312,6 +312,7 @@ The underlying layout engine used by the interactive functions, also available f
 - `-X` / `-Y`: Absolute text coordinates for the top-left corner.
 - `-SectionRules`: (Switch) Draw a horizontal rule between sections (header→body, body→footer) when `-Border` is off. No-op in `-Border` mode (the existing `├─┤` connectors are used instead). Useful for borderless layouts that still want visible segregation.
 - `-Ascii`: (Switch) Swap Unicode box-drawing chars (`─┌┐└┘├┤│`) for ASCII fallbacks (`-+++++|`). See [Rendering Modes](#rendering-modes).
+- `-PassThru`: (Switch) Emit the rendered line count to the pipeline. Without this switch the function returns nothing — matching the `Add-Member -PassThru` / `Set-ItemProperty -PassThru` convention for side-effect cmdlets. The internal callers `Get-PaginatedSelection` and `Invoke-NestedMenu` use the count for cursor management; standalone callers usually don't need it.
 
 **Example:**
 ```powershell

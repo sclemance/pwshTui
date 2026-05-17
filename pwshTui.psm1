@@ -530,8 +530,15 @@ function Write-TuiBox {
         (`─┌┐└┘├┤│` → `-+++++|`). Module-wide default reads `$env:PWSHTUI_ASCII`;
         the per-call switch overrides. Useful in restricted terminals,
         legacy code pages, or fonts missing box-drawing glyphs.
+    .PARAMETER PassThru
+        Emit the rendered line count to the pipeline. Without this switch
+        the function returns nothing — matching the convention for Write-*
+        functions whose primary purpose is side effects (cf. Add-Member,
+        Set-ItemProperty). The internal callers Get-PaginatedSelection and
+        Invoke-NestedMenu use the count for cursor management and so pass
+        -PassThru; standalone callers usually don't care and can omit it.
     .OUTPUTS
-        [int] number of lines rendered.
+        None by default, or [int] line count under -PassThru.
     #>
     [CmdletBinding()]
     param(
@@ -545,7 +552,8 @@ function Write-TuiBox {
         [int]$X = -1,
         [int]$Y = -1,
         [switch]$SectionRules,
-        [switch]$Ascii
+        [switch]$Ascii,
+        [switch]$PassThru
     )
 
     # Resolve effective ASCII mode: explicit switch > $env:PWSHTUI_ASCII > rich.
@@ -629,7 +637,7 @@ function Write-TuiBox {
         Write-Host "$line`e[K"
     }
 
-    return $frame.Count
+    if ($PassThru) { return $frame.Count }
 }
 
 function Get-PaginatedSelection {
@@ -867,7 +875,7 @@ function Get-PaginatedSelection {
             # Draw using UIBox
             $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
                                       -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
-                                      -SectionRules -Ascii:$asciiOn
+                                      -SectionRules -Ascii:$asciiOn -PassThru
 
             # If the box shrunk, clear the leftover lines below it
             if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
@@ -2620,7 +2628,7 @@ function Invoke-NestedMenu {
             # Draw using UIBox
             $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
                                       -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
-                                      -SectionRules -Ascii:$asciiOn
+                                      -SectionRules -Ascii:$asciiOn -PassThru
 
             # If the box shrunk, clear the leftover lines below it
             if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
