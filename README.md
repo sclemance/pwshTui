@@ -26,6 +26,8 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Show-Spinner`](#show-spinner) - Run a scriptblock with a live animated spinner
 - [`Write-Spinner`](#write-spinner) - Emit a log line that persists above an active spinner
 
+---
+
 ### `Get-PaginatedSelection`
 A powerful interactive selector for arrays or complex objects.
 
