@@ -6,21 +6,25 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 
 ## Functions
 
-- [`Get-PaginatedSelection`](#get-paginatedselection)
-- [`Read-MaskedInput`](#read-maskedinput)
-- [`Read-ValidatedInput`](#read-validatedinput)
-- [`Read-Confirmation`](#read-confirmation)
-- [`Read-Password`](#read-password)
-- [`Read-Choice`](#read-choice)
-- [`Read-Date`](#read-date)
-- [`Read-Time`](#read-time)
-- [`Read-Timezone`](#read-timezone)
-- [Templated input wrappers](#templated-input-wrappers) — `Read-Phone`, `Read-Email`, `Read-IPv4`, `Read-CIDR`, `Read-URL`
-- [`Invoke-NestedMenu`](#invoke-nestedmenu)
-- [`Write-TuiBox`](#write-tuibox)
-- [`Measure-FuzzyMatch`](#measure-fuzzymatch)
-- [`Show-Spinner`](#show-spinner)
-- [`Write-Spinner`](#write-spinner)
+- [`Get-PaginatedSelection`](#get-paginatedselection) - A powerful interactive selector for arrays or complex objects
+- [`Read-MaskedInput`](#read-maskedinput) - Formatted input prompt that enforces structure for fixed-length data (phone, MAC)
+- [`Read-ValidatedInput`](#read-validatedinput) - Free-form input field with live regex validation
+- [`Read-Confirmation`](#read-confirmation) - Dedicated Yes/No prompt with single-key or arrow-key navigation
+- [`Read-Password`](#read-password) - Masked password prompt that returns a `SecureString` by default
+- [`Read-Choice`](#read-choice) - One-line N-option selector with optional multi-select
+- [`Read-Date`](#read-date) - Inline Year/Month/Day picker with optional calendar grid
+- [`Read-Time`](#read-time) - Inline `HH:MM[:SS] [AM/PM]` time picker
+- [`Read-Timezone`](#read-timezone) - Time-zone picker built on `[TimeZoneInfo]::GetSystemTimeZones()`
+- [`Read-Phone`](#templated-input-wrappers) - Masked North-American phone input, wraps `Read-MaskedInput`
+- [`Read-Email`](#templated-input-wrappers) - Regex-validated email input, wraps `Read-ValidatedInput`
+- [`Read-IPv4`](#templated-input-wrappers) - Regex-validated IPv4 address, wraps `Read-ValidatedInput`
+- [`Read-CIDR`](#templated-input-wrappers) - Regex-validated IPv4 CIDR notation, wraps `Read-ValidatedInput`
+- [`Read-URL`](#templated-input-wrappers) - Regex-validated URL, wraps `Read-ValidatedInput`
+- [`Invoke-NestedMenu`](#invoke-nestedmenu) - Hierarchical menu for non-paginated, deep-tree navigation
+- [`Write-TuiBox`](#write-tuibox) - The underlying layout engine, also available for standalone use
+- [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
+- [`Show-Spinner`](#show-spinner) - Run a scriptblock with a live animated spinner
+- [`Write-Spinner`](#write-spinner) - Emit a log line that persists above an active spinner
 
 ### `Get-PaginatedSelection`
 A powerful interactive selector for arrays or complex objects.
