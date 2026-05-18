@@ -6,7 +6,23 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 
 ## Functions
 
-### 1. `Get-PaginatedSelection`
+- [`Get-PaginatedSelection`](#get-paginatedselection)
+- [`Read-MaskedInput`](#read-maskedinput)
+- [`Read-ValidatedInput`](#read-validatedinput)
+- [`Read-Confirmation`](#read-confirmation)
+- [`Read-Password`](#read-password)
+- [`Read-Choice`](#read-choice)
+- [`Read-Date`](#read-date)
+- [`Read-Time`](#read-time)
+- [`Read-Timezone`](#read-timezone)
+- [Templated input wrappers](#templated-input-wrappers) — `Read-Phone`, `Read-Email`, `Read-IPv4`, `Read-CIDR`, `Read-URL`
+- [`Invoke-NestedMenu`](#invoke-nestedmenu)
+- [`Write-TuiBox`](#write-tuibox)
+- [`Measure-FuzzyMatch`](#measure-fuzzymatch)
+- [`Show-Spinner`](#show-spinner)
+- [`Write-Spinner`](#write-spinner)
+
+### `Get-PaginatedSelection`
 A powerful interactive selector for arrays or complex objects.
 
 **Features:**
@@ -16,8 +32,8 @@ A powerful interactive selector for arrays or complex objects.
 - Object-aware: use `-DisplayProperty` to specify which property of an object to display in the menu.
 - Clean display logic that prevents artifacts on the screen when navigating between pages of varying lengths.
 - **Automatic Truncation:** Long lines are automatically truncated to fit the terminal width, preventing layout breakage and cursor sync issues.
-- **Live Search Filtering:** When enabled, typing filters the list dynamically using a robust fuzzy-matching algorithm.
-- **Multi-Select Mode:** When `-MultiSelect` is enabled, `Tab` toggles the current row's selection (with a `●`/`○` radio glyph in Unicode mode, `[x]`/`[ ]` in ASCII), and `Enter` returns an array of toggled items in original input order. Selection state persists across search filter changes. `Tab` (not `Space`) is the toggle so the search buffer can accept `Space` as a normal character — matches fzf `-m` convention.
+- **Live Search Filtering:** When `-Searchable` is enabled, input is split into two modes — selection (arrows/Enter/Esc, plus `Space` to toggle in `-MultiSelect`) and search (typing feeds the fuzzy-match filter buffer). `Tab` toggles between them; typing any printable character from selection mode also enters search mode. From search mode, `Enter`/`Esc`/`Tab`/arrow keys return to selection mode with the first matching row highlighted — they don't confirm or cancel, press the same key again from selection mode to do that. The dimmed highlight bar makes the active mode visible at a glance.
+- **Multi-Select Mode:** When `-MultiSelect` is enabled, `Space` toggles the current row's selection (with a `●`/`○` radio glyph in Unicode mode, `[x]`/`[ ]` in ASCII), and `Enter` returns an array of toggled items in original input order. Selection state persists across search filter changes. `-MinSelections` / `-MaxSelections` cap how many items the user can confirm — out-of-range Enter is silently blocked; toggle-on at the limit is also blocked.
 
 **Parameters:**
 - `-Items`: (Required) The array of items to select from.
@@ -27,18 +43,20 @@ A powerful interactive selector for arrays or complex objects.
 - `-Wrap`: (Switch) Enables wrapping from the bottom to the top of a page, and from the last page to the first page.
 - `-NoColor`: (Switch) Disables ANSI color highlighting, relying entirely on the `> ` pointer.
 - `-InitialIndex`: The 0-based index of the item to select by default. This will automatically calculate and display the correct page.
-- `-Searchable`: (Switch) Enables live fuzzy-search filtering. When active, alpha-numeric key presses will update a search buffer and dynamically filter the displayed list.
+- `-Searchable`: (Switch) Enables live fuzzy-search filtering. Activates the selection/search mode split described above.
 - `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `JaroWinkler`, `Legacy`). Default: `Auto`.
-- `-MultiSelect`: (Switch) Enables multi-selection. `Tab` toggles the current row; `Enter` returns an array of selected items (possibly empty) in original input order. `Esc` still returns `$null`, so callers can distinguish cancel (`$null`) from "confirmed nothing" (`@()`).
+- `-MultiSelect`: (Switch) Enables multi-selection. `Space` toggles the current row; `Enter` returns an array of selected items (possibly empty) in original input order. `Esc` still returns `$null`, so callers can distinguish cancel (`$null`) from "confirmed nothing" (`@()`).
+- `-MinSelections` / `-MaxSelections`: (`-MultiSelect` only) Minimum / maximum number of items that can be confirmed. Both clamp to the item count if higher. Min defaults to 0; Max defaults to the item count.
 - `-Ascii`: (Switch) Swap Unicode glyphs (`←→↑↓`, box-drawing chars) for ASCII fallbacks. See [Rendering Modes](#rendering-modes).
 
 **Shortcuts:**
-- `↑` / `↓`: Move selection within the current page.
-- `←` / `→`: Navigate between pages.
+- `↑` / `↓`: Move selection within the current page (selection mode).
+- `←` / `→`: Navigate between pages (selection mode).
 - `Enter`: Confirm selection.
 - `Esc`: Cancel selection (returns `$null`).
-- `Backspace` / `Alpha-numeric keys`: (When `-Searchable` is used) Modifies the search query to filter the list.
-- `Tab`: (When `-MultiSelect` is used) Toggles the current row's selection.
+- `Tab`: (When `-Searchable` is used) Toggle between selection mode and search mode.
+- `Space`: (When `-MultiSelect` is used) Toggle the current row's selection (selection mode only).
+- `Backspace` / printable keys: (search mode, when `-Searchable` is used) Edit the search query.
 
 **Example:**
 ```powershell
@@ -54,7 +72,7 @@ if ($selected) {
 
 ---
 
-### 2. `Read-MaskedInput`
+### `Read-MaskedInput`
 A formatted input prompt that enforces structure and restricts keystrokes as the user types. Ideal for fixed-length data like phone numbers or MAC addresses.
 
 **Features:**
@@ -99,7 +117,7 @@ $mac = Read-MaskedInput -Mask "XX:XX:XX:XX:XX:XX" -Prompt "Enter MAC Address:" -
 
 ---
 
-### 3. `Read-ValidatedInput`
+### `Read-ValidatedInput`
 A free-form input field with live Regex validation. Ideal for variable-length but strictly formatted data like Email addresses or IPs.
 
 **Features:**
@@ -136,7 +154,7 @@ $email = Read-ValidatedInput -Prompt "Enter Email:" -Pattern $emailRegex
 
 ---
 
-### 4. `Read-Confirmation`
+### `Read-Confirmation`
 A dedicated Yes/No prompt with single-key answer or arrow-key navigation.
 
 **Features:**
@@ -167,7 +185,7 @@ if (Read-Confirmation -Question "Delete the file?" -Default No) {
 
 ---
 
-### 5. `Read-Password`
+### `Read-Password`
 A masked password prompt that returns a `SecureString` by default. Cursor navigation (arrow keys, Home/End) is intentionally disabled, matching conventional password-field UX — only typing and Backspace are accepted.
 
 **Features:**
@@ -217,7 +235,7 @@ if ($s.Score -lt 4) { Write-Warning "Password is weaker than recommended ($($s.L
 
 ---
 
-### 6. `Read-Choice`
+### `Read-Choice`
 A one-line N-option selector with optional multi-select. Sits between `Read-Confirmation` (always 2 options) and `Get-PaginatedSelection` (long, searchable lists) for the short-inline-pick case.
 
 **Features:**
@@ -257,7 +275,145 @@ $toppings = Read-Choice -Question "Toppings:" -Options 'Cheese','Pepperoni','Mus
 
 ---
 
-### 7. `Invoke-NestedMenu`
+### `Read-Date`
+Inline Year/Month/Day picker with optional calendar grid visualization.
+
+**Features:**
+- Three fields displayed inline: `2026  May  17`. `Tab` cycles focus through Year → Month → Day (→ Calendar grid when `-Calendar` is set); `Shift+Tab` cycles in reverse. Up/Down adjust the focused value (Month wraps within year; Day clamps to the focused month's actual length, so "Feb 30" can never be a stable state).
+- **Year and Day** accept direct digit input: typing a number starts an edit (4-digit Year, 2-digit Day). `Enter` commits the edit, `Esc` discards it, `Tab` commits and advances.
+- **Month** is Up/Down only — letters and digits are ignored on the Month field.
+- **Calendar mode (`-Calendar`)** renders a culture-aware month grid beneath the fields and becomes its own focus stop in the Tab cycle. When focused, arrow keys move the highlighted day across weeks (and into adjacent months), `PgUp` / `PgDn` jump by a month. Dates outside `[MinDate, MaxDate]` are dimmed and cannot be navigated onto.
+- `-MinDate` / `-MaxDate` constrain Up/Down adjustments and calendar-grid navigation — out-of-range moves are silent no-ops, so `Enter` is always confirmable from any reachable state.
+- Returns `[DateTime]` with a `00:00:00` time component, or `$null` on cancel.
+
+**Parameters:**
+- `-Prompt`: Header text (Default: `"Pick a date:"`).
+- `-InitialDate`: `[DateTime]` starting value (Default: today).
+- `-MinDate` / `-MaxDate`: `[Nullable[DateTime]]` range constraints. Unset = unconstrained.
+- `-Calendar`: (Switch) Render the month grid under the fields and add it to the Tab focus cycle.
+- `-NoColor`, `-Ascii`, `-Border`, `-MinWidth`, `-MaxWidth`, `-X`, `-Y`, `-AltScreen`: Standard layout / rendering options. See [Rendering Modes](#rendering-modes) and [Global Layout Parameters](#global-layout-parameters).
+
+**Shortcuts:**
+- `Tab` / `Shift+Tab`: Cycle focus across Year, Month, Day, and (when `-Calendar`) the calendar grid.
+- `←` / `→`: Move focus within the Year/Month/Day group (shortcut to Tab); when calendar grid is focused, move highlighted day by one.
+- `↑` / `↓`: Adjust the focused field; when calendar grid is focused, move highlighted day by one week.
+- `PgUp` / `PgDn`: Jump by a month (calendar grid focus only).
+- Digits (on Year or Day): Start an edit. `Backspace` trims the buffer.
+- `Enter`: Commit the in-progress edit (edit mode), or confirm the date (otherwise).
+- `Esc`: Discard the in-progress edit (edit mode), or cancel the picker (otherwise).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Inline picker, defaults to today
+$dob = Read-Date -Prompt "Date of birth:" -MaxDate (Get-Date)
+
+# Calendar visualization with a constrained range
+$schedule = Read-Date -Prompt "Schedule for:" -Calendar `
+    -InitialDate (Get-Date).AddDays(7) `
+    -MinDate (Get-Date) `
+    -MaxDate (Get-Date).AddYears(1)
+```
+
+---
+
+### `Read-Time`
+Inline `HH:MM[:SS] [AM/PM]` time picker.
+
+**Features:**
+- Compact field layout: `14:30` (24-hour) or `02:30 PM` (12-hour, with `-TwelveHour`). Add a seconds field with `-ShowSeconds`.
+- Same selection/type mode split as [`Get-PaginatedSelection`](#get-paginatedselection). Selection-mode arrows navigate fields and adjust values; type-mode digits feed the focused field.
+- **Auto-advance** when a digit field fills: typing `1430` lands cleanly as `14:30` because the hour field auto-commits and focus shifts to minute mid-type. Typing additional digits past the last field is silently dropped.
+- **AM/PM field** accepts `a` and `p` as direct shortcuts (no buffer needed) in both modes; Up/Down in selection mode toggles. Internal time is always stored in 24-hour terms regardless of display mode.
+- Returns `[TimeSpan]` (`Days = 0`), or `$null` on cancel.
+
+**Parameters:**
+- `-Prompt`: Header text (Default: `"Enter time:"`).
+- `-InitialTime`: `[TimeSpan]` starting value (Default: `00:00:00`). Only the H/M/S components are read.
+- `-TwelveHour`: (Switch) Display as a 12-hour clock with AM/PM. The returned TimeSpan is still 24-hour.
+- `-ShowSeconds`: (Switch) Include a seconds field.
+- `-NoColor`, `-Ascii`, `-Border`, `-MinWidth`, `-MaxWidth`, `-X`, `-Y`, `-AltScreen`: Standard layout / rendering options.
+
+**Shortcuts:**
+- `←` / `→`: Move focus between fields (selection mode).
+- `↑` / `↓`: Adjust the focused field's value (selection mode). On the AM/PM field, either direction toggles.
+- `Tab`: Toggle between selection mode and type mode.
+- Digits: Enter type mode and feed the focused field (auto-advance when filled).
+- `a` / `p` (12-hour mode): Set AM/PM directly without entering type mode.
+- `Backspace`: Trim the type buffer (type mode).
+- `Enter`: Confirm (selection mode) or commit the type buffer and return to selection mode (type mode).
+- `Esc`: Cancel (selection mode) or discard the type buffer and return to selection mode (type mode).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# 24-hour clock, no seconds
+$start = Read-Time -Prompt "Start time:"
+
+# 12-hour clock with seconds, starting at 02:30 PM
+$alarm = Read-Time -Prompt "Alarm:" -TwelveHour -ShowSeconds `
+    -InitialTime ([TimeSpan]::new(14, 30, 0))
+```
+
+---
+
+### `Read-Timezone`
+Time-zone picker — thin wrapper over [`Get-PaginatedSelection`](#get-paginatedselection) populated from `[TimeZoneInfo]::GetSystemTimeZones()`.
+
+**Features:**
+- Lists every installed system time zone with its `Id` and `DisplayName`.
+- Highlights the local zone (`[TimeZoneInfo]::Local`) by default. Override with `-Default <id>`.
+- `-PreferredTimezones` pins a caller-supplied list of zone IDs to the top of the results in caller order, marked with a leading `*`. IDs not installed on the current platform are silently skipped — callers don't have to special-case cross-platform differences.
+- Inherits paginated-selection's fuzzy search: `Tab` enters search mode, typing filters the list. Returns `[TimeZoneInfo]` or `$null` on cancel.
+
+**Parameters:**
+- `-Prompt`: Header text (Default: `"Select a time zone:"`).
+- `-Default`: Zone ID to highlight initially (Default: the local zone's ID).
+- `-PreferredTimezones`: `[string[]]` of zone IDs to pin to the top.
+- `-PageSize`: Items per page (Default: `12`).
+- `-NoColor`, `-Ascii`, `-Border`, `-MinWidth`, `-MaxWidth`, `-X`, `-Y`, `-AltScreen`: Pass-through to `Get-PaginatedSelection`.
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Local zone highlighted, with three common zones pinned to the top
+$tz = Read-Timezone -PreferredTimezones 'UTC','America/New_York','Europe/London'
+
+# Pipe straight into TimeZoneInfo APIs
+[TimeZoneInfo]::ConvertTime((Get-Date), $tz)
+```
+
+---
+
+### Templated input wrappers
+Thin opinionated wrappers around [`Read-MaskedInput`](#read-maskedinput) and [`Read-ValidatedInput`](#read-validatedinput) that hard-code the mask or regex for the most common interactive-input shapes. Each forwards the relevant param subset of the underlying widget — for non-default formats (E.164 phone, IPv6 CIDR, custom URL schemes, etc.) use the underlying widget directly with your own mask or pattern.
+
+| Wrapper | Wraps | Format / pattern | Notes |
+|---|---|---|---|
+| `Read-Phone` | `Read-MaskedInput` | `(###) ###-####` | North American format only. Forwards `-Placeholder`, `-AllowIncomplete`, `-ReturnRaw`, `-NoColor`. |
+| `Read-Email` | `Read-ValidatedInput` | `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` | Common-practical; not RFC 5322 perfect. Forwards `-AllowEmpty`, `-NoColor`. |
+| `Read-IPv4` | `Read-ValidatedInput` | Dotted quad with valid octets (`0`–`255`) | Forwards `-AllowEmpty`, `-NoColor`. |
+| `Read-CIDR` | `Read-ValidatedInput` | IPv4 + `/0`–`/32` prefix | IPv4 only. Forwards `-AllowEmpty`, `-NoColor`. |
+| `Read-URL` | `Read-ValidatedInput` | `(https?|ftp)://...` (non-whitespace remainder) | "Looks like a URL," not RFC 3986 strict. Forwards `-AllowEmpty`, `-NoColor`. |
+
+All five accept `-Prompt` as the first positional parameter; defaults are `Phone:`, `Email:`, `IPv4 address:`, `CIDR notation:`, `URL:` respectively. Each returns the validated string, or `$null` on cancel.
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+$phone = Read-Phone -Prompt 'Customer phone:'
+$email = Read-Email -Prompt 'Notification address:' -AllowEmpty
+$lan   = Read-CIDR  -Prompt 'LAN range:'
+$endpoint = Read-URL -Prompt 'Webhook target:'
+```
+
+---
+
+### `Invoke-NestedMenu`
 A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Features:**
@@ -300,7 +456,7 @@ $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -Initia
 
 ---
 
-### 8. `Write-TuiBox`
+### `Write-TuiBox`
 The underlying layout engine used by the interactive functions, also available for standalone use.
 
 **Features:**
@@ -326,7 +482,7 @@ The underlying layout engine used by the interactive functions, also available f
 Write-TuiBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 ---
 
-### 9. `Measure-FuzzyMatch`
+### `Measure-FuzzyMatch`
 A utility function for calculating the relevance score between a search term and a target string. It uses a cross-platform, ensemble fuzzy-matching approach written entirely in pure PowerShell, ensuring it works securely in locked-down environments like Azure Automation without compiling C# code.
 
 **Features:**
@@ -354,7 +510,7 @@ $score2 = Measure-FuzzyMatch -SearchTerm "storge" -TargetText "Storage"
 
 ---
 
-### 10. `Show-Spinner`
+### `Show-Spinner`
 Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" UX behind one call.
 
 **Features:**
@@ -373,7 +529,7 @@ Run a scriptblock with a live animated spinner. Wraps "wait for this to finish" 
 - `-NoColor`: (Switch) Disable ANSI styling on the spinner glyph.
 - `-Ascii`: (Switch) Forces `-Style Ascii` regardless of any `-Style` argument. Single consistent fallback switch across the module. See [Rendering Modes](#rendering-modes).
 
-**Clean in-scriptblock output:** plain `Write-Host` from inside the scriptblock still tears the spinner row (same limitation as `Write-Progress`). Use [`Write-Spinner`](#11-write-spinner) as the opt-in clean channel — it buffers messages and the ticker flushes them above the animated glyph so they persist in scrollback.
+**Clean in-scriptblock output:** plain `Write-Host` from inside the scriptblock still tears the spinner row (same limitation as `Write-Progress`). Use [`Write-Spinner`](#write-spinner) as the opt-in clean channel — it buffers messages and the ticker flushes them above the animated glyph so they persist in scrollback.
 
 **Example:**
 ```powershell
@@ -394,7 +550,7 @@ Write-Host "Got $($users.Count) users in $('{0:F1}s' -f $el.TotalSeconds)"
 
 ---
 
-### 11. `Write-Spinner`
+### `Write-Spinner`
 Emit a log line that persists above an active spinner. The opt-in clean channel for any visible text the scriptblock needs to emit while a spinner is running — solves the otherwise-corrupting interleave with plain `Write-Host`.
 
 **Features:**
@@ -421,7 +577,7 @@ Show-Spinner -Activity "Indexing" -ShowTimer -ScriptBlock {
 
 ## Global Layout Parameters
 
-All interactive functions (`Get-PaginatedSelection`, `Invoke-NestedMenu`) now support the following layout parameters:
+All interactive functions (`Get-PaginatedSelection`, `Invoke-NestedMenu`, `Read-Date`, `Read-Time`, `Read-Timezone`) now support the following layout parameters:
 
 - `-Border`: Wraps the component in a box.
 - `-MinWidth`: Ensures a minimum box width.
@@ -437,12 +593,12 @@ Two cross-cutting rendering switches are available on every function where they 
 | Unicode | ASCII | Used in |
 |---|---|---|
 | `─ ┌ ┐ └ ┘ ├ ┤ │` | `- + + + + + + \|` | `Write-TuiBox` borders + section rules |
-| `← →` | `<- ->` | footers of paginated selection / nested menu |
-| `↑↓` | `^v` | footers of paginated selection / nested menu |
+| `← →` | `<- ->` | footers of paginated selection / nested menu / date / time |
+| `↑↓` | `^v` | footers of paginated selection / nested menu / date / time |
 | `►` | `>` | `Invoke-NestedMenu` child indicator |
 | Braille `⠋⠙⠹...` | `\| / - \\` | `Show-Spinner` — `-Ascii` forces `-Style Ascii` |
 
-Available on: `Write-TuiBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`.
+Available on: `Write-TuiBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-Date`, `Read-Time`, `Read-Timezone`.
 
 **`-NoColor`** — Disable ANSI color/styling. Visual affordances are preserved via bracket fallbacks:
 
@@ -454,9 +610,11 @@ Available on: `Write-TuiBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Sh
 | `Read-ValidatedInput` | Red/green text + cyan cursor | `[X]`-bracketed cursor + trailing `[OK]` / `[??]` marker |
 | `Read-Confirmation` | Cyan-bg selected button | `[Yes]` / `[No]` bracket on the selected option |
 | `Read-Choice` | Cyan-bg focused option | `> ` prefix on the focused option |
+| `Read-Date` / `Read-Time` | Cyan-bg focused field (blink in type mode) | `[XX]`-bracketed focused field |
+| `Read-Timezone` | Inherited from `Get-PaginatedSelection` | Inherited from `Get-PaginatedSelection` |
 | `Show-Spinner` | Cyan spinner glyph | Plain glyph |
 
-Available on: `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`.
+Available on: `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Read-Date`, `Read-Time`, `Read-Timezone`.
 
 **Resolution rule** (consistent everywhere): explicit per-call switch > environment variable > rich default. A per-call `-Ascii:$false` will force Unicode even when the env var is set.
 
@@ -488,7 +646,7 @@ Footer_Cancel    = Annulla
 Import-Module pwshTui -Force   # re-import to pick up the new culture
 ```
 
-Read-only resource keys: `Footer_Move`, `Footer_Select`, `Footer_Confirm`, `Footer_Cancel`, `Footer_Exit`, `Footer_Toggle`, `Footer_Expand`, `Footer_Back`, `Footer_PrevPage`, `Footer_NextPage`, `Footer_Selected`, `Footer_Search`, `Status_NoMatches`, `Status_NoItems`, `Status_Cancelled`, `Status_DoneIn`.
+Read-only resource keys: `Footer_Move`, `Footer_Select`, `Footer_Confirm`, `Footer_Cancel`, `Footer_Exit`, `Footer_Toggle`, `Footer_Expand`, `Footer_Back`, `Footer_PrevPage`, `Footer_NextPage`, `Footer_Selected`, `Footer_Search`, `Footer_BackToSelection`, `Footer_Field`, `Footer_Adjust`, `Footer_Edit`, `Status_NoMatches`, `Status_NoItems`, `Status_Cancelled`, `Status_DoneIn`.
 
 ## Terminal Safety & UI Polish
 
@@ -496,7 +654,7 @@ All functions in this module share the following safety guarantees:
 - **Stateful Cursor Management:** The real terminal cursor is automatically hidden to prevent flickering and visual tearing while drawing menus or input fields. The module captures the state of your terminal's cursor *before* running, and guarantees it is restored to that exact state when it exits.
 - **Clean Prompt Fallback:** If you cancel an input or menu (via `Esc` or `CTRL+C`), the module automatically emits a newline to ensure your subsequent shell prompt drops to a clean, fresh line, avoiding trailing artifacts.
 - **CTRL+C Safe:** Interactive functions set `[Console]::TreatControlCAsInput = $true` so the Ctrl+C keypress is caught **immediately** (not deferred until the next key) and rethrown as a `PipelineStoppedException`. The `finally` block runs first — cursor restored, alt-screen exited, `TreatControlCAsInput` restored — then the exception propagates. PowerShell handles it as a normal Ctrl+C, so the script terminates cleanly with no stack trace and the terminal lands you back at a clean prompt. (Esc remains the soft cancel — returns `$null`.)
-- **Host Compatibility:** Virtual-terminal capability is detected once at module import (`$Host.UI.SupportsVirtualTerminal`). Interactive functions (`Get-PaginatedSelection`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Invoke-NestedMenu`) fail fast with a clear error naming the function and current host when invoked from non-VT contexts (Azure Automation, Windows PowerShell ISE, redirected output) — they need `[Console]::ReadKey` which can't be polyfilled. `Show-Spinner` falls back to plain bracket log lines in the same contexts so scripts that wrap work in a spinner still run cleanly under automation.
+- **Host Compatibility:** Virtual-terminal capability is detected once at module import (`$Host.UI.SupportsVirtualTerminal`). Interactive functions (`Get-PaginatedSelection`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Read-Date`, `Read-Time`, `Read-Timezone`, `Read-Phone`, `Read-Email`, `Read-IPv4`, `Read-CIDR`, `Read-URL`, `Invoke-NestedMenu`) fail fast with a clear error naming the function and current host when invoked from non-VT contexts (Azure Automation, Windows PowerShell ISE, redirected output) — they need `[Console]::ReadKey` which can't be polyfilled. `Show-Spinner` falls back to plain bracket log lines in the same contexts so scripts that wrap work in a spinner still run cleanly under automation.
 - **Paste safety on text input:** `Read-Password`, `Read-MaskedInput`, and `Read-ValidatedInput` enable bracketed-paste mode (`\e[?2004h`) on entry, so the terminal hands them the pasted text as one delimited unit instead of streaming bytes that mix with the per-character Enter/Backspace handlers. Each function applies its own sanitation: control characters in the paste body trigger a visible reject; a single trailing `\r`/`\n` is treated as the user's Enter press. This eliminates the otherwise-silent corruption when a pasted value contains an embedded newline, which is particularly critical for `Read-Password -Confirm` where two identically-mangled pastes would otherwise "match" each other and lock the user out of whatever they just provisioned. Older terminals that don't recognize the bracketed-paste enable code silently ignore it and fall back to today's per-character behavior; modern Windows Terminal, iTerm2, Terminal.app, gnome-terminal, kitty, alacritty, and the VS Code integrated terminal all support it.
 
 ## Installation
@@ -506,7 +664,7 @@ All functions in this module share the following safety guarantees:
 
 ## What's Next
 
-pwshTui covers the most common script-level prompts well — single-choice selection, masked / validated input, and nested menus. The following are on the table as the library grows, listed roughly by scope:
+pwshTui covers the most common script-level prompts well — single-choice selection, masked / validated input, date / time / timezone pickers, and nested menus. The following are on the table as the library grows, listed roughly by scope:
 
 - **Terminal resize handling** — recalculate layout on `WindowWidth` / `WindowHeight` changes.
 - **`Get-PaginatedSelection -Columns`** — auto-aligned tabular display for picking from object collections.

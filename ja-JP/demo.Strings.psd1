@@ -1,0 +1,151 @@
+# pwshTui デモのローカライズ文字列 (ja-JP)。
+ConvertFrom-StringData @'
+Menu_Group_SelectionMenus     = 選択とメニュー
+Menu_Group_InputPrompts       = 入力
+Menu_Group_DateTime           = 日付と時刻
+Menu_Group_AsyncLayout        = 非同期とレイアウト
+Menu_ToggleRenderMode         = 描画モード切替 (現在: {0})
+Menu_ChangeLanguage           = 言語変更 (現在: {0})
+Menu_ExitDemo                 = デモを終了
+
+Menu_Paginated                = ページ送り選択 (検索可能)
+Menu_PaginatedJump            = ページ送り選択 (-InitialIndex で #25 にジャンプ)
+Menu_MultiSelect              = ページ送り複数選択 (スペースで切替)
+Menu_Nested                   = 階層メニュー
+Menu_NestedDeep               = 階層メニュー (-InitialPath ディープリンク)
+Menu_NestedBordered           = 階層メニュー (枠線 + AltScreen)
+
+Menu_MaskedInput              = マスク入力 (電話番号、MAC)
+Menu_PasswordInput            = パスワード入力 (SecureString、確認、PIN)
+Menu_ValidatedInput           = 検証付き入力 (IPv4、CIDR、メール)
+Menu_Confirmation             = はい/いいえ確認
+Menu_ChoiceSelector           = 選択 (単一 + 複数)
+Menu_TemplatedWrappers        = テンプレートラッパー (電話、メール、IPv4、CIDR、URL)
+
+Menu_DateInline               = Read-Date (インライン項目)
+Menu_DateCalendar             = Read-Date -Calendar (月間グリッド付き)
+Menu_Time24                   = Read-Time (24時間)
+Menu_Time12                   = Read-Time -TwelveHour -ShowSeconds
+Menu_Timezone                 = Read-Timezone (優先リスト付き)
+
+Menu_Spinner                  = Show-Spinner (デフォルト Braille)
+Menu_SpinnerTimer             = Show-Spinner -ShowTimer 付き
+Menu_SpinnerStyles            = Show-Spinner — 全 6 スタイル
+Menu_SpinnerClosure           = Show-Spinner — クロージャ捕捉
+Menu_UIBox                    = Write-TuiBox (単独)
+
+Title_Demo                    = pwshTui デモ [{0} | {1}]
+Title_SelectSystemObject      = システムオブジェクトを選択
+Title_JumpedToItem25          = 項目 25 にジャンプ
+Title_PickMultiple            = 複数オブジェクトを選択
+Title_AdminPortal             = 管理ポータル
+Title_BorderedMenu            = 枠付きメニュー
+Title_SystemStatus            = システム状態
+
+Header_Paginated              = Get-PaginatedSelection (検索可能)
+Header_PaginatedJump          = Get-PaginatedSelection (-InitialIndex で特定の項目へジャンプ)
+Header_MultiSelect            = Get-PaginatedSelection -MultiSelect
+Header_NestedMenu             = Invoke-NestedMenu
+Header_NestedMenuDeep         = Invoke-NestedMenu -InitialPath (Power Saver へディープリンク)
+Header_NestedMenuBordered     = Invoke-NestedMenu (枠付き、位置指定、AltScreen)
+Header_MaskedInput            = Read-MaskedInput
+Header_Password               = Read-Password
+Header_ValidatedInput         = Read-ValidatedInput
+Header_Confirmation           = Read-Confirmation
+Header_Choice                 = Read-Choice
+Header_Spinner                = Show-Spinner (デフォルト Braille)
+Header_SpinnerTimer           = Show-Spinner -ShowTimer
+Header_SpinnerStyles          = Show-Spinner — 全 6 スタイル、各 1.5 秒
+Header_SpinnerClosure         = Show-Spinner — クロージャは普通に使える
+Header_UIBox                  = Write-TuiBox (単独)
+Header_Date                   = Read-Date (インライン)
+Header_DateCalendar           = Read-Date -Calendar (月間グリッド付き)
+Header_Time                   = Read-Time (24時間)
+Header_TimeTwelve             = Read-Time -TwelveHour -ShowSeconds
+Header_TemplatedWrappers      = 入力テンプレートラッパー (電話、メール、IPv4、CIDR、URL)
+Header_Timezone               = Read-Timezone
+
+Hint_Paginated                = 入力でファジー検索、矢印で移動、Enter で確定、Esc でキャンセル。
+Hint_MultiSelect              = スペースで切替 (選択モード)、Tab で検索モード、入力でフィルタ、矢印で選択モードに戻り先頭行が強調、Enter で確定、Esc でキャンセル。
+Hint_NestedBordered           = -Border -MinWidth 40 -X 5 -Y 15 -AltScreen でメニューを描画中...
+Hint_Password1                = 入力で文字を入れ、Backspace で削除、Enter で送信、Esc でキャンセル。
+Hint_Password2                = 強度インジケータがマスク入力の右にリアルタイム表示されます。
+Hint_Confirmation             = Y/N で即答、左/右/Tab でハイライト移動、Enter で確定、Esc でキャンセル。
+Hint_Choice                   = 矢印または数字 1-N で移動、Enter で確定、Esc でキャンセル。
+Hint_ChoiceMulti              = 複数選択: スペースで切替、数字でフォーカス移動、Enter で配列を返します。
+Hint_Spinner                  = 2 秒間スリープを実行中...
+Hint_SpinnerTimer             = 3.5 秒間スリープを実行中 (経過時間表示付き)...
+Hint_SpinnerStylesAscii       = ASCII モードが有効です。-Ascii は -Style に関わらず Style=Ascii を強制するため、4 種すべてが下の Ascii グリフで描画されます。ASCII を無効にすると各スタイルが個別に表示されます。
+Hint_SpinnerClosure           = 呼び出し側スコープに $magicNumber = {0}。スクリプトブロックは -ArgumentList なしでも使えます。
+Hint_Date                     = ← → で項目移動、↑ ↓ でフォーカス値を調整、数字入力で項目に値を入れ、Tab でモード切替。
+Hint_DateCalendar1            = 入力モデルはインラインピッカーと同じ。グリッドは読み取り専用で、フォーカス日を文脈として表示します。
+Hint_DateCalendar2            = 今日..今日+1年に制限。範囲外では Enter がブロックされます。
+Hint_Time                     = 4 桁入力で HH:MM を一気に埋められます (1430 → 14:30)。矢印で項目移動、↑↓ で調整。
+Hint_TimeTwelve               = 12 時間時計 (AM/PM、a/p ショートカット) と秒項目。内部表現は常に 24 時間。
+Hint_Templated                = 各ラッパーはよく使う入力形のためにマスクや正規表現を組み込んでいます。Esc で次へスキップ。
+Hint_Timezone1                = ローカルゾーンが既定で強調されます。よく使うゾーンは先頭に "*" 付きで固定。
+Hint_Timezone2                = ページ送り選択の検索を継承 — Tab でフィルタ。
+
+Prompt_PhoneNumber            = 電話番号:
+Prompt_MacAddress             = MAC アドレス:
+Prompt_Password               = パスワード:
+Prompt_NewPassword            = 新しいパスワード:
+Prompt_Retype                 = 再入力:
+Prompt_PIN                    = PIN (長さ非表示):
+Prompt_IPv4                   = IPv4 アドレス:
+Prompt_CIDR                   = CIDR 表記:
+Prompt_Email                  = メールアドレス:
+Prompt_DeleteFile             = ファイルを削除しますか?
+Prompt_PickColor              = 色を選択:
+Prompt_PickToppings           = トッピングを選択:
+Prompt_PickDate               = 日付を選択:
+Prompt_ScheduleFor            = 予定:
+Prompt_StartTime              = 開始時刻:
+Prompt_Alarm                  = アラーム:
+Prompt_Phone                  = 電話:
+Prompt_EmailShort             = メール:
+Prompt_IPv4Short              = IPv4 アドレス:
+Prompt_CIDRShort              = CIDR 表記:
+Prompt_URL                    = URL:
+
+Activity_Working              = 処理中
+Activity_Querying             = 問合せ中
+Activity_Computing            = 計算中
+Activity_StylePrefix          = スタイル: {0}
+
+Result_YouSelected            = 選択: {0}
+Result_YouSelectedWithID      = 選択: {0} (ID: {1})
+Result_SelectionCancelled     = 選択をキャンセルしました。
+Result_Cancelled              = キャンセルしました。
+Result_CancelledNull          = キャンセル ($null を返却)。
+Result_CancelledOrExhausted   = キャンセルまたは試行回数超過。
+Result_ConfirmedNoSelections  = 選択なしで確定しました。
+Result_SelectedItems          = {0} 件選択:
+Result_Captured               = 取得: {0}
+Result_CapturedPlainText      = 平文を取得: {0}
+Result_CapturedSecureString   = SecureString を取得 (長さ {0})。
+Result_ConfirmedSecureString  = SecureString を確定 (長さ {0})。
+Result_Strength               = 強度: {0} (スコア {1}/6、{2} 文字種)
+Result_ConfirmedYes           = 確定: はい
+Result_ConfirmedNo            = 確定: いいえ
+Result_CapturedNone           = 取得: (なし)
+Result_AllStylesShown         = 全スタイル表示完了。
+Result_ScriptblockReturned    = スクリプトブロックの戻り値: {0} (期待: 84)
+Result_Done                   = 完了。
+Result_MenuCancelled          = メニューをキャンセルしました。
+Result_CapturedAction         = アクション取得: {0}
+Result_SelectedTimezone       = 選択: {0}
+Result_TimezoneDisplay        = 表示:  {0}
+Result_LocalNow               = ローカル時刻:   {0}
+Result_InSelected             = 選択先時刻: {0}
+Result_SelectedDate           = 選択: {0}
+Result_SelectedTime           = 選択: {0}
+
+Common_PressAnyKey            = [ 任意のキーでメニューに戻る ]
+Common_Thanks                 = pwshTui をお試しいただきありがとうございました。
+Common_CouldNotLoadLocale     = ロケール "{0}" を読み込めませんでした。
+Common_DemoBox                = デモボックス
+Common_BodyCPU                = CPU: 12%
+Common_BodyRAM                = RAM: 4.2GB
+Common_BodyDisk               = ディスク: 80% 使用
+'@

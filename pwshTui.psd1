@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.8.0'
+    ModuleVersion        = '0.9.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
-    Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
+    Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, date / time / timezone pickers, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,49 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.9.0
+- Templated input wrappers for the most common interactive-input shapes:
+  Read-Phone (NA-format masked, wraps Read-MaskedInput), Read-Email,
+  Read-IPv4, Read-CIDR, Read-URL (regex-validated, wrap Read-ValidatedInput).
+  Each hard-codes the mask/pattern and forwards the relevant subset of the
+  underlying widget's parameters. Patterns live in module-private script
+  vars ($script:_IPv4Pattern, etc.) so wrappers and demo paths read the
+  exact same regex.
+- Read-Date: inline Year/Month/Day picker with optional -Calendar grid.
+  Tab/Shift+Tab cycles focus across Year → Month → Day → (Calendar grid
+  when -Calendar) → Year; Up/Down adjust the focused field (Month wraps
+  within year, Day clamps to the month's actual length). Typing a digit
+  on Year or Day starts an edit (4-digit Year, 2-digit Day, Enter commits,
+  Esc discards); Month is arrow-only. When the calendar grid is focused,
+  arrows move the highlighted day by one day / one week (crossing months),
+  PgUp/PgDn jump by a month. Dates outside [MinDate, MaxDate] are dimmed
+  and act as boundary stops for navigation. Returns [DateTime] (00:00:00
+  time) or $null on cancel.
+- Read-Time: inline HH:MM picker with optional -ShowSeconds and
+  -TwelveHour (adds an AM/PM field with a/p shortcuts). Same selection/
+  type mode split as Get-PaginatedSelection — Tab toggles, typing digits
+  enters type mode with auto-advance when a field fills (so '1430' lands
+  cleanly as 14:30). Returns [TimeSpan] (Days = 0).
+- Read-Timezone: thin wrapper over Get-PaginatedSelection -Searchable
+  built on [TimeZoneInfo]::GetSystemTimeZones(). Highlights the local
+  zone by default; -PreferredTimezones pins a caller-supplied list to
+  the top of the results with a leading star marker. Returns
+  [TimeZoneInfo].
+- Internationalization: new Get-DisplayWidth / Add-DisplayPadding helpers
+  measure strings in terminal display columns (East-Asian Wide and
+  Fullwidth code points count as 2 cells, ANSI CSI sequences as 0).
+  Write-TuiBox uses them so CJK content sizes the box and truncates
+  correctly; Read-Date's calendar grid header auto-widens to fit the
+  widest day-name in the current locale. Two new translations added:
+  ja-JP and zh-CN. Three new localized footer strings (Footer_Field,
+  Footer_Adjust, Footer_Edit) across en/fr/de/es/ja/zh.
+- Demo localization: demo.ps1 strings live in a separate <culture>/
+  demo.Strings.psd1 alongside the library strings. Set-DemoCulture loads
+  both files (with en-US fallback for the demo file when a translation is
+  missing) and flips Thread.CurrentCulture so DateTimeFormatInfo-driven
+  widgets reflect the chosen language. Translations provided for all six
+  supported locales (en, fr, de, es, ja, zh).
+
 0.8.0
 - Read-Password gains -ShowStrength: live Weak/Fair/Good/Strong
   indicator (color-coded red/yellow/cyan/green) appended to the right

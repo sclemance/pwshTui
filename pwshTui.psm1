@@ -66,6 +66,75 @@ function Get-Glyphs([bool]$Ascii) {
     if ($Ascii) { $script:_GlyphsAscii } else { $script:_GlyphsUnicode }
 }
 
+function Get-DisplayWidth {
+    # Return the visible column width of a string when rendered to a typical
+    # terminal. Differs from String.Length in three ways:
+    #   - East-Asian Wide and Fullwidth code points (CJK ideographs, Hiragana,
+    #     Katakana, Hangul Syllables, Fullwidth Forms) count as 2 cells.
+    #   - Control characters count as 0.
+    #   - ANSI CSI sequences (e.g. `\e[31m`) count as 0 — they're skipped
+    #     inline so callers can pass already-styled strings without
+    #     pre-stripping. Bare ESC without a CSI body is treated as a regular
+    #     control char (skipped).
+    # The range table is the conservative Unicode East-Asian-Width Wide/
+    # Fullwidth set — narrow ambiguous handling and emoji-modifier joining
+    # are out of scope; we accept occasional miscounts on edge code points
+    # rather than carry a full bidi/grapheme engine.
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return 0 }
+    $w = 0
+    $i = 0
+    while ($i -lt $Text.Length) {
+        # ANSI CSI sequence: ESC '[' <params> <final byte A-Za-z>.
+        if ($Text[$i] -eq [char]27 -and ($i + 1) -lt $Text.Length -and $Text[$i + 1] -eq '[') {
+            $i += 2
+            while ($i -lt $Text.Length -and ($Text[$i] -match '[0-9;]')) { $i++ }
+            if ($i -lt $Text.Length -and [char]::IsLetter($Text[$i])) { $i++ }
+            continue
+        }
+        # Surrogate-pair handling: a high+low surrogate together name one
+        # code point. We advance past the low surrogate so the loop sees the
+        # pair as a single character.
+        if ([char]::IsHighSurrogate($Text[$i]) -and ($i + 1) -lt $Text.Length -and [char]::IsLowSurrogate($Text[$i + 1])) {
+            $cp = [char]::ConvertToUtf32($Text, $i)
+            $i += 2
+        } else {
+            $cp = [int][char]$Text[$i]
+            $i++
+        }
+        if ($cp -lt 0x20 -or ($cp -ge 0x7F -and $cp -lt 0xA0)) {
+            continue
+        }
+        $isWide = `
+            ($cp -ge 0x1100  -and $cp -le 0x115F) -or          ` # Hangul Jamo
+            ($cp -ge 0x2E80  -and $cp -le 0x303E) -or          ` # CJK Radicals / Kangxi
+            ($cp -ge 0x3041  -and $cp -le 0x33FF) -or          ` # Hiragana, Katakana, CJK Symbols
+            ($cp -ge 0x3400  -and $cp -le 0x4DBF) -or          ` # CJK Ext A
+            ($cp -ge 0x4E00  -and $cp -le 0x9FFF) -or          ` # CJK Unified Ideographs
+            ($cp -ge 0xA000  -and $cp -le 0xA4CF) -or          ` # Yi
+            ($cp -ge 0xAC00  -and $cp -le 0xD7A3) -or          ` # Hangul Syllables
+            ($cp -ge 0xF900  -and $cp -le 0xFAFF) -or          ` # CJK Compat Ideographs
+            ($cp -ge 0xFE30  -and $cp -le 0xFE4F) -or          ` # CJK Compat Forms
+            ($cp -ge 0xFF00  -and $cp -le 0xFF60) -or          ` # Fullwidth Forms
+            ($cp -ge 0xFFE0  -and $cp -le 0xFFE6) -or          ` # Fullwidth Signs
+            ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or         ` # Misc Symbols & Pictographs / Emoji
+            ($cp -ge 0x1F900 -and $cp -le 0x1F9FF) -or         ` # Supplemental Symbols & Pictographs
+            ($cp -ge 0x20000 -and $cp -le 0x3FFFD)               # CJK Ext B-F (supplementary plane)
+        if ($isWide) { $w += 2 } else { $w += 1 }
+    }
+    return $w
+}
+
+function Add-DisplayPadding {
+    # Right-pad $Text with spaces until its display width reaches $Width.
+    # If the text is already at-or-wider than the target, returns it
+    # unchanged — callers control truncation policy themselves.
+    param([string]$Text, [int]$Width)
+    $current = Get-DisplayWidth $Text
+    if ($current -ge $Width) { return $Text }
+    return $Text + (' ' * ($Width - $current))
+}
+
 # Localized UI strings. Defaults below are en-US and stay as a complete
 # fallback set so the module renders correctly even if no resource file
 # matches. Import-LocalizedData walks the culture hierarchy automatically
@@ -86,6 +155,10 @@ $script:_Strings = @{
     Footer_NextPage  = 'Next page'
     Footer_Selected  = 'selected'
     Footer_Search    = 'Search'
+    Footer_BackToSelection = 'Selection mode'
+    Footer_Field     = 'Field'
+    Footer_Adjust    = 'Adjust'
+    Footer_Edit      = 'Edit'
     Status_NoMatches = '(No matches found)'
     Status_NoItems   = 'No items to select.'
     Status_Cancelled = '(cancelled)'
@@ -461,16 +534,12 @@ function Measure-FuzzyMatch {
 # Module-private (not exported). Hoisted out of Write-TuiBox so they're defined
 # once at module load instead of re-created on every render call.
 
-$script:_AnsiRegex = "\e\[[0-9;]*[a-zA-Z]"
-
-function Get-VisibleLength ([string]$s) {
-    if ([string]::IsNullOrEmpty($s)) { return 0 }
-    return ($s -replace $script:_AnsiRegex, "").Length
-}
-
-# Truncate to N visible characters while preserving ANSI escape sequences inline.
-# ANSI sequences don't count toward the visible width but are emitted as-is so
-# inline styling survives the truncation.
+# Truncate to a maximum number of display cells while preserving ANSI escape
+# sequences inline. ANSI CSI sequences contribute zero cells but are emitted
+# as-is so inline styling survives the truncation. East-Asian Wide / Fullwidth
+# characters count as 2 cells (same range table as Get-DisplayWidth); if the
+# next character would push past $maxVisibleLen the loop stops, so the result
+# may be 1 cell short of the limit when truncation lands on a wide char.
 function Get-VisibleSubstring ([string]$s, [int]$maxVisibleLen) {
     if ($maxVisibleLen -le 0 -or [string]::IsNullOrEmpty($s)) { return "" }
     $sb = [System.Text.StringBuilder]::new()
@@ -484,11 +553,42 @@ function Get-VisibleSubstring ([string]$s, [int]$maxVisibleLen) {
             while ($i -lt $s.Length -and ($s[$i] -match '[0-9;]')) { $i++ }
             if ($i -lt $s.Length -and [char]::IsLetter($s[$i])) { $i++ }
             [void]$sb.Append($s.Substring($start, $i - $start))
-        } else {
-            [void]$sb.Append($s[$i])
-            $visibleCount++
-            $i++
+            continue
         }
+        # Cell-width of the next code point. Mirrors Get-DisplayWidth so the
+        # two stay consistent; kept inline to avoid per-char function-call
+        # overhead in the render hot path.
+        if ([char]::IsHighSurrogate($s[$i]) -and ($i + 1) -lt $s.Length -and [char]::IsLowSurrogate($s[$i + 1])) {
+            $cp = [char]::ConvertToUtf32($s, $i)
+            $charLen = 2
+        } else {
+            $cp = [int][char]$s[$i]
+            $charLen = 1
+        }
+        if ($cp -lt 0x20 -or ($cp -ge 0x7F -and $cp -lt 0xA0)) {
+            $i += $charLen
+            continue
+        }
+        $cellWidth = if (
+            ($cp -ge 0x1100  -and $cp -le 0x115F) -or
+            ($cp -ge 0x2E80  -and $cp -le 0x303E) -or
+            ($cp -ge 0x3041  -and $cp -le 0x33FF) -or
+            ($cp -ge 0x3400  -and $cp -le 0x4DBF) -or
+            ($cp -ge 0x4E00  -and $cp -le 0x9FFF) -or
+            ($cp -ge 0xA000  -and $cp -le 0xA4CF) -or
+            ($cp -ge 0xAC00  -and $cp -le 0xD7A3) -or
+            ($cp -ge 0xF900  -and $cp -le 0xFAFF) -or
+            ($cp -ge 0xFE30  -and $cp -le 0xFE4F) -or
+            ($cp -ge 0xFF00  -and $cp -le 0xFF60) -or
+            ($cp -ge 0xFFE0  -and $cp -le 0xFFE6) -or
+            ($cp -ge 0x1F300 -and $cp -le 0x1F64F) -or
+            ($cp -ge 0x1F900 -and $cp -le 0x1F9FF) -or
+            ($cp -ge 0x20000 -and $cp -le 0x3FFFD)
+        ) { 2 } else { 1 }
+        if ($visibleCount + $cellWidth -gt $maxVisibleLen) { break }
+        [void]$sb.Append($s.Substring($i, $charLen))
+        $visibleCount += $cellWidth
+        $i += $charLen
     }
     return $sb.ToString()
 }
@@ -565,10 +665,11 @@ function Write-TuiBox {
     $allLines += $Body
     if ($Footer) { $allLines += $Footer }
 
-    # Calculate required width
+    # Calculate required width. Measured in display cells, so CJK content
+    # gets a wider box rather than overflowing the right border.
     $maxContentLen = $MinWidth
     foreach ($line in $allLines) {
-        $len = Get-VisibleLength $line
+        $len = Get-DisplayWidth $line
         if ($len -gt $maxContentLen) { $maxContentLen = $len }
     }
 
@@ -592,7 +693,7 @@ function Write-TuiBox {
     $addSectionLines = {
         param([string[]]$sectionLines)
         foreach ($line in $sectionLines) {
-            $visibleLen = Get-VisibleLength $line
+            $visibleLen = Get-DisplayWidth $line
             $displayText = $line
             if ($visibleLen -gt $innerBoxWidth) {
                 # Truncate visible content to leave room for "..." then reset
@@ -649,15 +750,18 @@ function Get-PaginatedSelection {
         Renders a paginated list and returns the selected item, or $null on
         cancel. Supports keyboard navigation, page/selection wrap, an initial
         highlighted index, and (with -Searchable) live fuzzy-search filtering
-        powered by Measure-FuzzyMatch. With -MultiSelect, Tab toggles rows
+        powered by Measure-FuzzyMatch. With -MultiSelect, Space toggles rows
         and Enter returns an array of toggled items.
 
         Keys: Up/Down move within page, Left/Right change page, Enter selects,
-        Esc cancels. In Searchable mode any printable character (including
-        Space) extends the search buffer; Backspace deletes from it. In
-        MultiSelect mode Tab toggles the current row's selection — chosen so
-        Space stays available for the search buffer and never silently
-        toggles a row mid-query.
+        Esc cancels. With -Searchable, input is split into two modes —
+        selection (arrows/Enter/Esc, Space toggles in MultiSelect) and
+        search (typing feeds the filter buffer). Tab toggles between them;
+        typing any printable character from selection mode also enters
+        search mode. From search mode, Enter/Esc/Tab/arrow keys return to
+        selection mode with the first matching row highlighted (they do not
+        confirm or cancel — press the same key again from selection mode
+        to do that).
     .PARAMETER Items
         Required. Collection to choose from (strings or objects).
     .PARAMETER PageSize
@@ -680,14 +784,22 @@ function Get-PaginatedSelection {
         Minimum match score (0-1000) for an item to appear when searching.
         Default 100. Lower = more permissive.
     .PARAMETER MultiSelect
-        Enable multi-selection. Tab toggles the current row's selection
-        (independent of cursor position); Enter returns an array of selected
-        items in original input order. Selection state persists across search
-        filter changes. Esc still returns $null. Enter with no toggled items
-        returns an empty array (distinguishable from $null cancel).
-
-        Tab (not Space) is the toggle so the search buffer can accept Space
-        as a normal character — matches fzf -m convention.
+        Enable multi-selection. Space toggles the current row's selection;
+        Enter returns an array of selected items in original input order.
+        Selection state persists across search filter changes. Esc cancels
+        and returns $null. Enter with no toggled items returns an empty
+        array (distinguishable from $null cancel).
+    .PARAMETER MinSelections
+        Minimum number of items required before -MultiSelect Enter will
+        confirm. Defaults to 0 (no minimum). Clamped to the item count if
+        higher; clamped to MaxSelections if higher than that. Ignored
+        when -MultiSelect is not set.
+    .PARAMETER MaxSelections
+        Maximum number of items the user may toggle in -MultiSelect mode.
+        Defaults to the item count (no maximum). Clamped to the item count
+        if higher. Attempts to toggle on an item beyond this limit are
+        silently ignored; items can always be toggled off. Ignored when
+        -MultiSelect is not set.
     .OUTPUTS
         Without -MultiSelect: the selected item, or $null if cancelled.
         With -MultiSelect: an array (possibly empty) of selected items in
@@ -733,6 +845,10 @@ function Get-PaginatedSelection {
 
         [switch]$MultiSelect,
 
+        [int]$MinSelections = 0,
+
+        [int]$MaxSelections = [int]::MaxValue,
+
         [switch]$Ascii
     )
 
@@ -758,6 +874,62 @@ function Get-PaginatedSelection {
     # objects, value equality for strings). Persists across filter changes
     # so a toggled item stays selected even when filtered off-screen.
     $selectedSet = [System.Collections.Generic.HashSet[object]]::new()
+
+    # Clamp Min/MaxSelections to the available item count — a developer
+    # passing values larger than the input is a script-side misconfig the
+    # caller can detect from the returned array; the UI never advertises an
+    # impossible minimum.
+    $effectiveMax = if ($MaxSelections -gt $itemList.Count) { $itemList.Count } else { [Math]::Max(0, $MaxSelections) }
+    $effectiveMin = if ($MinSelections -gt $itemList.Count) { $itemList.Count } else { [Math]::Max(0, $MinSelections) }
+    if ($effectiveMin -gt $effectiveMax) { $effectiveMin = $effectiveMax }
+
+    # When Searchable is on, input is split into two modes. Selection mode
+    # (initial) is where arrows navigate and Enter/Esc/Space act; search mode
+    # is where keystrokes feed the filter buffer. The split is the same with
+    # or without -MultiSelect — only what Space does in selection mode differs
+    # (toggles the current row in MultiSelect; ignored in single-select).
+    $inputMode = 'selection'
+
+    # Shared mode-switch action: return to selection mode with the first row
+    # highlighted. Used both by Tab (search → selection) and by the exit
+    # triggers inside search-mode handling (Enter/Esc/arrow). Dot-sourced so
+    # the assignments hit the loop scope, not a child.
+    $resetToSelection = {
+        $inputMode = 'selection'
+        $pageIndex = 0
+        $selectedIndex = 0
+    }
+
+    # Shared filter refresh used by both the typing-enters-search transition
+    # and ongoing keystrokes within search mode. Dot-sourced (. $applyFilter)
+    # so it mutates $filteredItems / $previousSearchBuffer / $pageIndex /
+    # $selectedIndex in the loop's scope instead of a child scope.
+    $applyFilter = {
+        if ([string]::IsNullOrEmpty($searchBuffer)) {
+            $filteredItems = $itemList
+        } else {
+            # Incremental narrowing: extending the previous buffer can only
+            # remove matches, so scoring the previously filtered set is
+            # sufficient. Backspace or replacement falls back to the full list.
+            $candidateSet = if ($previousSearchBuffer -and $searchBuffer.StartsWith($previousSearchBuffer)) {
+                $filteredItems
+            } else {
+                $itemList
+            }
+            $scoredItems = @()
+            foreach ($item in $candidateSet) {
+                $itemName = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
+                $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName -Algorithm $SearchAlgorithm
+                if ($score -ge $SearchThreshold) {
+                    $scoredItems += [PSCustomObject]@{ Item = $item; Score = $score }
+                }
+            }
+            $filteredItems = @($scoredItems | Sort-Object Score -Descending | Select-Object -ExpandProperty Item)
+        }
+        $previousSearchBuffer = $searchBuffer
+        $pageIndex = 0
+        $selectedIndex = 0
+    }
 
     # Ensure InitialIndex is within bounds
     if ($InitialIndex -ge $itemList.Count) { $InitialIndex = $itemList.Count - 1 }
@@ -818,8 +990,15 @@ function Get-PaginatedSelection {
             $firstRender = $false
 
             # Build Sections for UIBox
+            $inSearchMode = $Searchable -and $inputMode -eq 'search'
             $displayTitle = if ($Searchable) {
-                if ($searchBuffer) { "$Title [$($script:_Strings.Footer_Search): $searchBuffer]" }
+                # Show a blinking cursor in the search area while in search
+                # mode so the user can tell at a glance which mode they're in.
+                # No-color path falls back to a plain underscore.
+                $searchCursor = if ($inSearchMode) {
+                    if ($noColorOn) { "_" } else { "`e[5m_`e[25m" }
+                } else { "" }
+                if ($searchBuffer -or $inSearchMode) { "$Title [$($script:_Strings.Footer_Search): $searchBuffer$searchCursor]" }
                 else { "$Title [$($script:_Strings.Footer_Search)]" }
             } else {
                 $Title
@@ -836,20 +1015,27 @@ function Get-PaginatedSelection {
                     else { $displayText = $item.ToString() }
                     if ([string]::IsNullOrWhiteSpace($displayText)) { $displayText = $item.ToString() }
 
-                    if ($MultiSelect) {
-                        $marker = if ($selectedSet.Contains($item)) { $g.RadioOn } else { $g.RadioOff }
-                        $displayText = "$marker  $displayText"
-                    }
+                    # MultiSelect renders the radio glyph + two spaces *outside*
+                    # the highlight bar so the marker and spacing remain legible
+                    # against the cyan background — only the item text itself
+                    # is highlighted.
+                    $markerPrefix = if ($MultiSelect) {
+                        if ($selectedSet.Contains($item)) { "$($g.RadioOn)  " } else { "$($g.RadioOff)  " }
+                    } else { "" }
 
                     $isRowSelected = ($i -eq $selectedIndex)
                     if ($isRowSelected) {
                         if ($noColorOn) {
-                            $body += "$pointer$displayText"
+                            $body += "$pointer$markerPrefix$displayText"
                         } else {
-                            $body += "`e[36m$pointer`e[46;30m$displayText`e[0m"
+                            # In search mode the highlight is dimmed (faint
+                            # attribute) so the user keeps their place while
+                            # selection input is paused. Same shape otherwise.
+                            $dim = if ($inSearchMode) { '2;' } else { '' }
+                            $body += "`e[${dim}36m$pointer`e[0m$markerPrefix`e[${dim}46;30m$displayText`e[0m"
                         }
                     } else {
-                        $body += "$emptyPointer$displayText"
+                        $body += "$emptyPointer$markerPrefix$displayText"
                     }
                 }
             } else {
@@ -865,9 +1051,25 @@ function Get-PaginatedSelection {
             $footerLines = [System.Collections.Generic.List[string]]::new()
             $footerLines.Add("$($g.ArrowLeft) $($s.Footer_PrevPage) $pageNumDisplay   $($g.ArrowRight) $($s.Footer_NextPage) $pageNumDisplay")
             if ($MultiSelect) {
-                $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay   Tab=$($s.Footer_Toggle) ($($selectedSet.Count) $($s.Footer_Selected))   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+                $countDisplay = "$($selectedSet.Count) $($s.Footer_Selected)"
+                # Show min/max only when constrained — keeps the footer quiet
+                # for the common unconstrained case.
+                if ($effectiveMin -gt 0 -or $effectiveMax -lt $itemList.Count) {
+                    $countDisplay = "$countDisplay, min=$effectiveMin max=$effectiveMax"
+                }
+                if ($inSearchMode) {
+                    $footerLines.Add("Tab/Enter/Esc/$($g.ArrowsUpDown)=$($s.Footer_BackToSelection)   ($countDisplay)")
+                } else {
+                    $tabHint = if ($Searchable) { "   Tab=$($s.Footer_Search)" } else { "" }
+                    $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay   Space=$($s.Footer_Toggle) ($countDisplay)$tabHint   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+                }
             } else {
-                $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Cancel)")
+                if ($inSearchMode) {
+                    $footerLines.Add("Tab/Enter/Esc/$($g.ArrowsUpDown)=$($s.Footer_BackToSelection)")
+                } else {
+                    $tabHint = if ($Searchable) { "   Tab=$($s.Footer_Search)" } else { "" }
+                    $footerLines.Add("$($g.ArrowsUpDown) $($s.Footer_Move) $rangeDisplay$tabHint   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Cancel)")
+                }
             }
 
             $footer = @($footerLines)
@@ -894,65 +1096,66 @@ function Get-PaginatedSelection {
                 throw [System.Management.Automation.PipelineStoppedException]::new()
             }
 
-            if ($MultiSelect -and $key.Key -eq 'Tab') {
+            # Tab: toggle between search and selection input modes (Searchable
+            # only — without search there's nothing to switch to). Same
+            # mechanism regardless of -MultiSelect.
+            if ($Searchable -and $key.Key -eq 'Tab') {
+                if ($inputMode -eq 'search') { . $resetToSelection }
+                else { $inputMode = 'search' }
+                continue
+            }
+
+            # Search mode: keystrokes edit the buffer; navigation, Enter, and
+            # Esc all exit back to selection mode (with the first row
+            # highlighted) rather than triggering their usual actions. The
+            # user has to be in selection mode to confirm or cancel — press
+            # the same key again from there.
+            if ($inputMode -eq 'search') {
+                if ($key.Key -eq 'Backspace') {
+                    if ($searchBuffer.Length -gt 0) {
+                        $searchBuffer = $searchBuffer.Substring(0, $searchBuffer.Length - 1)
+                        . $applyFilter
+                    }
+                    # Empty-buffer Backspace stays in search mode (no-op).
+                } elseif ($key.Key -in 'Enter', 'Escape', 'UpArrow', 'DownArrow', 'LeftArrow', 'RightArrow') {
+                    . $resetToSelection
+                } elseif ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar)) {
+                    $searchBuffer += $key.KeyChar
+                    . $applyFilter
+                }
+                continue
+            }
+
+            # Selection mode + MultiSelect: Space toggles the current row.
+            # Done before the typing-enters-search check below so Space never
+            # silently leaks into the search buffer.
+            if ($MultiSelect -and $key.Key -eq 'Spacebar') {
                 if ($currentPageItems.Count -gt 0) {
                     $toggleItem = $currentPageItems[$selectedIndex]
                     if ($selectedSet.Contains($toggleItem)) {
                         [void]$selectedSet.Remove($toggleItem)
-                    } else {
+                    } elseif ($selectedSet.Count -lt $effectiveMax) {
+                        # Block toggle-on at the limit (toggle-off above is
+                        # always allowed). Friendlier than accepting it and
+                        # then blocking Enter — the user finds out at the
+                        # press, not at confirm time.
                         [void]$selectedSet.Add($toggleItem)
                     }
                 }
                 continue
             }
 
-            if ($Searchable) {
-                $handledSearchKey = $false
-                if ($key.Key -eq 'Backspace') {
-                    if ($searchBuffer.Length -gt 0) {
-                        $searchBuffer = $searchBuffer.Substring(0, $searchBuffer.Length - 1)
-                        $handledSearchKey = $true
-                    }
-                } elseif ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar)) {
-                    # Skip leading spaces. A bare leading space collapses the
-                    # list to "no matches" (nothing scores against ' '), which
-                    # is the opposite of what users expect from an impulsive
-                    # Space press. Internal spaces are still allowed so
-                    # multi-word queries like "my server" work.
-                    if (-not ($searchBuffer.Length -eq 0 -and $key.KeyChar -eq ' ')) {
-                        $searchBuffer += $key.KeyChar
-                        $handledSearchKey = $true
-                    }
-                }
-
-                if ($handledSearchKey) {
-                    if ([string]::IsNullOrEmpty($searchBuffer)) {
-                        $filteredItems = $itemList
-                    } else {
-                        # Incremental narrowing: if the new buffer extends the previous
-                        # one, scoring the prior filtered set is sufficient (chars-in-order
-                        # algorithms can only lose matches as the query grows). Backspace
-                        # / replacement reverts to the full list.
-                        $candidateSet = if ($previousSearchBuffer -and $searchBuffer.StartsWith($previousSearchBuffer)) {
-                            $filteredItems
-                        } else {
-                            $itemList
-                        }
-                        $scoredItems = @()
-                        foreach ($item in $candidateSet) {
-                            $itemName = if ($DisplayProperty) { $item.$DisplayProperty } else { $item.ToString() }
-                            $score = Measure-FuzzyMatch -SearchTerm $searchBuffer -TargetText $itemName -Algorithm $SearchAlgorithm
-                            if ($score -ge $SearchThreshold) {
-                                $scoredItems += [PSCustomObject]@{ Item = $item; Score = $score }
-                            }
-                        }
-                        $filteredItems = @($scoredItems | Sort-Object Score -Descending | Select-Object -ExpandProperty Item)
-                    }
-                    $previousSearchBuffer = $searchBuffer
-                    $pageIndex = 0
-                    $selectedIndex = 0
-                    continue # Skip standard navigation key checks
-                }
+            # Selection mode + Searchable: any printable other than Space
+            # flips into search mode and starts the buffer with that
+            # character. Space is excluded so a stray Space press is a no-op
+            # in single-select (and was already consumed above for
+            # MultiSelect) — it can never accidentally start a search with a
+            # leading space.
+            if ($Searchable -and $key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar) -and $key.KeyChar -ne ' ') {
+                $inputMode = 'search'
+                $searchBuffer += $key.KeyChar
+                . $applyFilter
+                continue
             }
 
             switch ($key.Key) {
@@ -986,15 +1189,25 @@ function Get-PaginatedSelection {
                 }
                 'Enter' {
                     if ($MultiSelect) {
-                        # Return selected items in original input order. Wrapped
-                        # in a single-element array via the unary comma so that
-                        # PowerShell preserves the array shape even when 0 or 1
-                        # items are selected.
-                        $result = ,@($itemList | Where-Object { $selectedSet.Contains($_) })
-                    } elseif ($filteredItems.Count -gt 0) {
-                        $result = $filteredItems[$startIdx + $selectedIndex]
+                        # Confirm only when the selection count satisfies the
+                        # configured min/max. Out-of-range Enter is silently
+                        # ignored — the count is visible in the footer.
+                        if ($selectedSet.Count -ge $effectiveMin -and $selectedSet.Count -le $effectiveMax) {
+                            # Wrapped in a single-element array via the unary
+                            # comma so PowerShell preserves array shape even
+                            # when 0 or 1 items are selected.
+                            $result = ,@($itemList | Where-Object { $selectedSet.Contains($_) })
+                            $running = $false
+                        }
+                    } else {
+                        if ($filteredItems.Count -gt 0) {
+                            $result = $filteredItems[$startIdx + $selectedIndex]
+                        }
+                        # Preserves prior behavior: in single-select, Enter
+                        # always exits — with no matches it returns $null (a
+                        # cancel-equivalent), matching the original contract.
+                        $running = $false
                     }
-                    $running = $false
                 }
                 'Escape' {
                     $result = $null
@@ -2875,4 +3088,1096 @@ function Invoke-NestedMenu {
     return $result
 }
 
-Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch
+function Read-Date {
+    <#
+    .SYNOPSIS
+        Inline date picker with optional calendar visualization.
+    .DESCRIPTION
+        Renders YYYY / Month / DD fields and lets the user pick a date via
+        arrow navigation, Up/Down adjustment, or direct typing. Same
+        mode-split as Get-PaginatedSelection's search: arrows navigate
+        fields and Up/Down adjust values in selection mode; typing digits
+        flips to type mode and feeds the focused field. Year and Day fields
+        accept two/four-digit input; the Month field accepts 1..12.
+        Tab toggles modes; from type mode, arrows / Enter / Esc commit
+        the buffer and return to selection mode.
+
+        With -Calendar a month grid is rendered beneath the fields as
+        visual context — the input model is unchanged.
+    .PARAMETER Prompt
+        Header text. Default: "Pick a date:".
+    .PARAMETER InitialDate
+        Starting value. Default: today (date component only).
+    .PARAMETER MinDate
+        Earliest acceptable date (inclusive). Enter is blocked silently
+        when the current selection is below this. Default: unconstrained.
+    .PARAMETER MaxDate
+        Latest acceptable date (inclusive). Enter is blocked silently
+        when the current selection is above this. Default: unconstrained.
+    .PARAMETER Calendar
+        Switch. Render a month grid beneath the fields showing the focused
+        day in context. The input model is the same as without the switch.
+    .OUTPUTS
+        [DateTime] with the chosen date and a 00:00:00 time component, or
+        $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.DateTime])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Pick a date:',
+
+        [System.DateTime]$InitialDate = (Get-Date).Date,
+
+        [Nullable[System.DateTime]]$MinDate,
+        [Nullable[System.DateTime]]$MaxDate,
+
+        [switch]$Calendar,
+
+        [switch]$NoColor,
+        [switch]$Ascii,
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
+    )
+
+    Assert-InteractiveHost 'Read-Date'
+
+    $asciiOn   = if ($PSBoundParameters.ContainsKey('Ascii'))   { [bool]$Ascii }   else { $script:_AsciiMode }
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $g = Get-Glyphs $asciiOn
+
+    $initDate = $InitialDate.Date
+    $year  = $initDate.Year
+    $month = $initDate.Month
+    $day   = $initDate.Day
+
+    # Field ordering is fixed Year/Month/Day (ISO-style), with an optional
+    # Calendar grid focus appended when -Calendar is set. Culture-specific
+    # ordering is an explicit non-goal — keeps the visual unambiguous and
+    # the typing rules consistent across locales.
+    $fields = @('Y','M','D')
+    if ($Calendar) { $fields += 'C' }
+    $lastFieldIdx = $fields.Count - 1
+
+    $focusedIdx = 0
+    # Editing is only entered for Y or D fields when the user starts typing
+    # digits. Enter commits, Esc discards, Tab commits-and-advances. Month is
+    # Up/Down-only — typing has no edit state for it.
+    $editing = $false
+    $typeBuffer = ''
+
+    # Culture-aware abbreviated month names for display.
+    $dtfi = [System.Globalization.DateTimeFormatInfo]::CurrentInfo
+    $monthAbbrs = @(1..12 | ForEach-Object { $dtfi.GetAbbreviatedMonthName($_) })
+    # Find the widest abbreviation so the inline display has stable spacing.
+    # Measured in terminal display cells rather than String.Length — CJK
+    # locales render `月` etc. as fullwidth (2 cells).
+    $monthWidth = ($monthAbbrs | ForEach-Object { Get-DisplayWidth $_ } | Measure-Object -Maximum).Maximum
+
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+    Write-Host "`e[?25l" -NoNewline
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
+
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
+    $running = $true
+    $result = $null
+
+    # Clamp day to the focused month/year's actual length whenever month or
+    # year changes — keeps "Feb 30" from ever being a stable state.
+    $clampDay = {
+        $maxD = [DateTime]::DaysInMonth($year, $month)
+        if ($day -gt $maxD) { $day = $maxD }
+        if ($day -lt 1) { $day = 1 }
+    }
+
+    # Commit the digit buffer to the focused field. Only Y and D fields
+    # accept typed input; Month is cycled via Up/Down arrows only.
+    $commitBuffer = {
+        if ([string]::IsNullOrEmpty($typeBuffer)) { return }
+        $n = $fields[$focusedIdx]
+        switch ($n) {
+            'Y' {
+                $val = 0
+                if ([int]::TryParse($typeBuffer, [ref]$val)) {
+                    $year = [Math]::Max(1, [Math]::Min(9999, $val))
+                    . $clampDay
+                }
+            }
+            'D' {
+                $val = 0
+                if ([int]::TryParse($typeBuffer, [ref]$val)) {
+                    $maxD = [DateTime]::DaysInMonth($year, $month)
+                    $day = [Math]::Max(1, [Math]::Min($maxD, $val))
+                }
+            }
+        }
+        $typeBuffer = ''
+    }
+
+    # Selection-mode Up/Down. Year clamps at 1..9999; Month wraps within the
+    # year (Up at Dec → Jan); Day wraps within the focused month. When
+    # MinDate/MaxDate are set, the adjustment is reverted if it would push
+    # the date out of range — keeps Enter from being silently blocked
+    # because the user navigated past a constraint.
+    $adjustField = {
+        param([int]$delta)
+        $savedYear = $year; $savedMonth = $month; $savedDay = $day
+        $n = $fields[$focusedIdx]
+        switch ($n) {
+            'Y' {
+                $year = [Math]::Max(1, [Math]::Min(9999, $year + $delta))
+                . $clampDay
+            }
+            'M' {
+                $month = ((($month - 1) + $delta) % 12 + 12) % 12 + 1
+                . $clampDay
+            }
+            'D' {
+                $maxD = [DateTime]::DaysInMonth($year, $month)
+                $day = (($day - 1 + $delta) % $maxD + $maxD) % $maxD + 1
+            }
+        }
+        if ($null -ne $MinDate -or $null -ne $MaxDate) {
+            $proposed = & $currentDate
+            if ($null -ne $proposed) {
+                $tooEarly = ($null -ne $MinDate) -and ($proposed -lt $MinDate.Date)
+                $tooLate  = ($null -ne $MaxDate) -and ($proposed -gt $MaxDate.Date)
+                if ($tooEarly -or $tooLate) {
+                    $year = $savedYear; $month = $savedMonth; $day = $savedDay
+                }
+            }
+        }
+    }
+
+    # Composed date used for MinDate/MaxDate gating. Wrapped in try/catch
+    # for the unlikely paranoid case where state somehow drifted invalid.
+    $currentDate = {
+        try { return [DateTime]::new($year, $month, $day) }
+        catch { return $null }
+    }
+
+    # Calendar-grid focus: move the highlighted day by N days, crossing month
+    # and year boundaries via DateTime arithmetic. Stops at MinDate/MaxDate
+    # — out-of-range targets are a silent no-op so the visual greying makes
+    # the boundary self-evident.
+    $moveCalendarDay = {
+        param([int]$dayDelta)
+        try {
+            $current = [DateTime]::new($year, $month, $day)
+            $target = $current.AddDays($dayDelta)
+        } catch { return }
+        if ($target.Year -lt 1 -or $target.Year -gt 9999) { return }
+        if (($null -ne $MinDate) -and ($target -lt $MinDate.Date)) { return }
+        if (($null -ne $MaxDate) -and ($target -gt $MaxDate.Date)) { return }
+        $year = $target.Year
+        $month = $target.Month
+        $day = $target.Day
+    }
+
+    # Calendar-grid focus: jump by N months. Day is clamped to the new
+    # month's length (so May 31 → Jun 30) and the resulting date is checked
+    # against MinDate/MaxDate; out-of-range is a no-op.
+    $moveCalendarMonth = {
+        param([int]$monthDelta)
+        $newYear = $year
+        $newMonth = $month + $monthDelta
+        while ($newMonth -lt 1)  { $newMonth += 12; $newYear-- }
+        while ($newMonth -gt 12) { $newMonth -= 12; $newYear++ }
+        if ($newYear -lt 1 -or $newYear -gt 9999) { return }
+        $maxD = [DateTime]::DaysInMonth($newYear, $newMonth)
+        $newDay = [Math]::Min($day, $maxD)
+        try { $target = [DateTime]::new($newYear, $newMonth, $newDay) }
+        catch { return }
+        if (($null -ne $MinDate) -and ($target -lt $MinDate.Date)) { return }
+        if (($null -ne $MaxDate) -and ($target -gt $MaxDate.Date)) { return }
+        $year = $newYear
+        $month = $newMonth
+        $day = $newDay
+    }
+
+    # Render one field's text — buffer-in-progress when typing into it,
+    # otherwise the current value formatted to the field's width. Month is
+    # arrow-only so it never shows a type buffer.
+    $fieldText = {
+        param([int]$idx)
+        $n = $fields[$idx]
+        $isEditing = ($idx -eq $focusedIdx -and $editing -and $typeBuffer.Length -gt 0)
+        switch ($n) {
+            'Y' {
+                if ($isEditing) { return $typeBuffer.PadRight(4, '_') }
+                return ('{0:0000}' -f $year)
+            }
+            'M' {
+                return Add-DisplayPadding $monthAbbrs[$month - 1] $monthWidth
+            }
+            'D' {
+                if ($isEditing) { return $typeBuffer.PadRight(2, '_') }
+                return ('{0:00}' -f $day)
+            }
+        }
+    }
+
+    # Render the field row with the focused field highlighted. When focus
+    # is on the calendar grid, no field is highlighted in this row — the
+    # active focus indicator is the highlighted cell in the grid itself.
+    $renderFields = {
+        $sb = New-Object System.Text.StringBuilder
+        for ($i = 0; $i -lt 3; $i++) {
+            if ($i -gt 0) { [void]$sb.Append('  ') }
+            $text = & $fieldText $i
+            if ($i -eq $focusedIdx) {
+                if ($noColorOn) {
+                    [void]$sb.Append("[$text]")
+                } else {
+                    $blink = if ($editing) { '5;' } else { '' }
+                    [void]$sb.Append("`e[${blink}46;30m$text`e[0m")
+                }
+            } else {
+                [void]$sb.Append($text)
+            }
+        }
+        return $sb.ToString()
+    }
+
+    # Render the calendar grid (only used when -Calendar is set). Day-of-
+    # week header is taken from the current culture; week start is Sunday
+    # (fixed — culture's actual FirstDayOfWeek differs by region; pinning
+    # to Sunday keeps the grid layout predictable across locales).
+    $renderCalendar = {
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $rawDayNames = @(0..6 | ForEach-Object { $dtfi.GetShortestDayName($_) })
+        # Column width follows the widest day name in display cells, but is
+        # never less than 2 (the natural width of a 1-or-2-digit day). Most
+        # CJK locales return 1-char (2-cell) names that fit a 2-cell column;
+        # zh-CN is the outlier — its CLDR `ShortestDayNames` are actually
+        # 2-char (`周日`, `周一`), so the whole grid widens to 4 cells per
+        # column to keep the header aligned over the digits.
+        $dayCellWidth = 2
+        foreach ($n in $rawDayNames) {
+            $w = Get-DisplayWidth $n
+            if ($w -gt $dayCellWidth) { $dayCellWidth = $w }
+        }
+        $abbrDayNames = @($rawDayNames | ForEach-Object { Add-DisplayPadding $_ $dayCellWidth })
+        [void]$lines.Add('   ' + ($abbrDayNames -join ' '))
+        $firstDow = [int](([DateTime]::new($year, $month, 1)).DayOfWeek)
+        $daysInMonth = [DateTime]::DaysInMonth($year, $month)
+        $cells = [System.Collections.Generic.List[string]]::new()
+        $blankCell = ' ' * $dayCellWidth
+        for ($i = 0; $i -lt $firstDow; $i++) { [void]$cells.Add($blankCell) }
+        for ($d = 1; $d -le $daysInMonth; $d++) {
+            $cell = "{0,$dayCellWidth}" -f $d
+            $cellDate = [DateTime]::new($year, $month, $d)
+            $excluded = (($null -ne $MinDate) -and ($cellDate -lt $MinDate.Date)) -or `
+                        (($null -ne $MaxDate) -and ($cellDate -gt $MaxDate.Date))
+            if ($d -eq $day) {
+                if ($noColorOn) {
+                    # In NoColor the bracket marker can mismatch the column
+                    # width — accept the alignment cost rather than introduce
+                    # an inconsistent marker that callers have to reason about.
+                    $cell = "[$d]"
+                    if ($d -lt 10) { $cell = "[ $d]" }
+                } else {
+                    $cell = "`e[46;30m$cell`e[0m"
+                }
+            } elseif ($excluded -and -not $noColorOn) {
+                # Dim style (`\e[2m`) for dates outside [MinDate, MaxDate].
+                # In NoColor the cell is left plain — the boundary stop in
+                # the navigation helpers still prevents landing on it.
+                $cell = "`e[2m$cell`e[0m"
+            }
+            [void]$cells.Add($cell)
+        }
+        # Pad trailing blanks so the last row is a full week — keeps the
+        # box width stable across months with different day counts.
+        while (($cells.Count % 7) -ne 0) { [void]$cells.Add($blankCell) }
+        for ($r = 0; $r -lt $cells.Count; $r += 7) {
+            $rowCells = $cells.GetRange($r, 7)
+            [void]$lines.Add('   ' + ($rowCells -join ' '))
+        }
+        return $lines.ToArray()
+    }
+
+    try {
+        $firstRender = $true
+        $lastHeight = 0
+
+        while ($running) {
+            if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+                Write-Host "`e[$($lastHeight)A" -NoNewline
+            } elseif ($firstRender -and ($X -lt 0 -and $Y -lt 0)) {
+                Write-Host ""
+            }
+            $firstRender = $false
+
+            $header = @($Prompt)
+            $body = [System.Collections.Generic.List[string]]::new()
+            $fieldLine = & $renderFields
+            [void]$body.Add($fieldLine)
+            if ($Calendar) {
+                # Single-space spacer — Write-TuiBox's [string[]] Mandatory
+                # binding rejects empty strings as individual array elements.
+                [void]$body.Add(' ')
+                $calLines = & $renderCalendar
+                foreach ($l in $calLines) { [void]$body.Add($l) }
+            }
+
+            $s = $script:_Strings
+            $currentField = $fields[$focusedIdx]
+            $footerLines = [System.Collections.Generic.List[string]]::new()
+            if ($editing) {
+                [void]$footerLines.Add("Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+            } elseif ($currentField -eq 'C') {
+                [void]$footerLines.Add("$($g.ArrowLeft)$($g.ArrowRight)$($g.ArrowsUpDown) $($s.Footer_Move)   PgUp/PgDn $($s.Footer_Adjust)   Tab=$($s.Footer_Field)   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+            } else {
+                [void]$footerLines.Add("Tab=$($s.Footer_Field)   $($g.ArrowsUpDown) $($s.Footer_Adjust)   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+            }
+            $footer = @($footerLines)
+
+            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
+                -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
+                -SectionRules -Ascii:$asciiOn -PassThru
+
+            if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
+                $diff = $lastHeight - $newHeight
+                for ($h = 0; $h -lt $diff; $h++) { Write-Host "`e[K" }
+                Write-Host "`e[$($diff)A" -NoNewline
+            }
+            $lastHeight = $newHeight
+
+            $key = [Console]::ReadKey($true)
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            }
+
+            $isShift = ($key.Modifiers -band [System.ConsoleModifiers]::Shift) -ne 0
+
+            # Edit mode (Y or D field, user is typing a value). Only Enter,
+            # Esc, Tab, Backspace, and digits are meaningful here. Enter
+            # commits the buffer and stays on the field; Esc discards;
+            # Tab commits and advances focus.
+            if ($editing) {
+                switch ($key.Key) {
+                    'Enter' {
+                        . $commitBuffer
+                        $editing = $false
+                    }
+                    'Escape' {
+                        $typeBuffer = ''
+                        $editing = $false
+                    }
+                    'Tab' {
+                        . $commitBuffer
+                        $editing = $false
+                        if ($isShift) {
+                            $focusedIdx = ($focusedIdx - 1 + $fields.Count) % $fields.Count
+                        } else {
+                            $focusedIdx = ($focusedIdx + 1) % $fields.Count
+                        }
+                    }
+                    'Backspace' {
+                        if ($typeBuffer.Length -gt 0) {
+                            $typeBuffer = $typeBuffer.Substring(0, $typeBuffer.Length - 1)
+                        }
+                    }
+                    default {
+                        if ([char]::IsDigit($key.KeyChar)) {
+                            $maxLen = if ($currentField -eq 'Y') { 4 } else { 2 }
+                            if ($typeBuffer.Length -lt $maxLen) {
+                                $typeBuffer += $key.KeyChar
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+
+            # Tab cycles focus across Y → M → D → (Calendar) → Y.
+            if ($key.Key -eq 'Tab') {
+                if ($isShift) {
+                    $focusedIdx = ($focusedIdx - 1 + $fields.Count) % $fields.Count
+                } else {
+                    $focusedIdx = ($focusedIdx + 1) % $fields.Count
+                }
+                continue
+            }
+
+            # Calendar-grid focus: arrows move the highlighted day across
+            # weeks (and into adjacent months); PgUp/PgDn jump by a month.
+            # Boundary stops at MinDate/MaxDate are enforced inside the move
+            # helpers — the visual greying makes them self-evident.
+            if ($currentField -eq 'C') {
+                switch ($key.Key) {
+                    'LeftArrow'  { . $moveCalendarDay -1 }
+                    'RightArrow' { . $moveCalendarDay 1 }
+                    'UpArrow'    { . $moveCalendarDay -7 }
+                    'DownArrow'  { . $moveCalendarDay 7 }
+                    'PageUp'     { . $moveCalendarMonth -1 }
+                    'PageDown'   { . $moveCalendarMonth 1 }
+                    'Enter' {
+                        $candidate = & $currentDate
+                        if ($null -ne $candidate) {
+                            $okMin = ($null -eq $MinDate) -or ($candidate -ge $MinDate.Date)
+                            $okMax = ($null -eq $MaxDate) -or ($candidate -le $MaxDate.Date)
+                            if ($okMin -and $okMax) {
+                                $result = $candidate
+                                $running = $false
+                            }
+                        }
+                    }
+                    'Escape' {
+                        $result = $null
+                        $running = $false
+                    }
+                }
+                continue
+            }
+
+            # Y/M/D focus, not editing. Left/Right is a shortcut for moving
+            # within the Y/M/D group; Tab is the canonical way to also reach
+            # the calendar grid.
+            switch ($key.Key) {
+                'LeftArrow'  { if ($focusedIdx -gt 0) { $focusedIdx-- } }
+                'RightArrow' { if ($focusedIdx -lt 2) { $focusedIdx++ } }
+                'UpArrow'    { . $adjustField 1 }
+                'DownArrow'  { . $adjustField -1 }
+                'Enter' {
+                    $candidate = & $currentDate
+                    if ($null -ne $candidate) {
+                        # PowerShell unboxes [Nullable[DateTime]] params to a
+                        # plain DateTime when bound (or $null when unbound),
+                        # so the .HasValue/.Value pattern fails under strict
+                        # mode. $null check is the canonical pattern here.
+                        $okMin = ($null -eq $MinDate) -or ($candidate -ge $MinDate.Date)
+                        $okMax = ($null -eq $MaxDate) -or ($candidate -le $MaxDate.Date)
+                        if ($okMin -and $okMax) {
+                            $result = $candidate
+                            $running = $false
+                        }
+                        # Out-of-range Enter is silently blocked — the user
+                        # can see the date in the fields and the constraint
+                        # mismatch is self-evident.
+                    }
+                }
+                'Escape' {
+                    $result = $null
+                    $running = $false
+                }
+                default {
+                    # Digits start an edit on Y or D. Month is Up/Down only.
+                    if ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar) -and [char]::IsDigit($key.KeyChar)) {
+                        if ($currentField -eq 'Y' -or $currentField -eq 'D') {
+                            $editing = $true
+                            $typeBuffer = "$($key.KeyChar)"
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+            Write-Host "`e[$($lastHeight)A" -NoNewline
+        }
+        Write-Host "`e[J" -NoNewline
+        if ($originalCursorVisible) { Write-Host "`e[?25h" -NoNewline }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
+        [Console]::TreatControlCAsInput = $origCtrlC
+        if ($null -eq $result) { Write-Host "" }
+    }
+
+    return $result
+}
+
+function Read-Time {
+    <#
+    .SYNOPSIS
+        Inline time picker with field navigation and direct digit input.
+    .DESCRIPTION
+        Renders HH:MM (with optional :SS and AM/PM) and lets the user
+        change the time via arrow navigation, Up/Down adjustment, or direct
+        typing. Same mode-split as Get-PaginatedSelection's search: arrows
+        navigate fields and Up/Down adjust values in selection mode; typing
+        digits flips to type mode and feeds the focused field with
+        auto-advance when a field fills. Tab toggles modes; from type mode,
+        arrows / Enter / Esc commit the buffer and return to selection
+        mode without confirming or cancelling.
+    .PARAMETER Prompt
+        Header text. Default: "Enter time:".
+    .PARAMETER InitialTime
+        Starting value. Default: [TimeSpan]::Zero (00:00:00). Only the
+        hour/minute/second components are read.
+    .PARAMETER TwelveHour
+        Switch. Display as a 12-hour clock with an AM/PM field appended.
+        The returned TimeSpan is always in 24-hour terms.
+    .PARAMETER ShowSeconds
+        Switch. Include a seconds field. Without this switch the seconds
+        component of the returned TimeSpan is always 0.
+    .OUTPUTS
+        [TimeSpan] of the chosen time-of-day (Days = 0), or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.TimeSpan])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Enter time:',
+
+        [System.TimeSpan]$InitialTime = [System.TimeSpan]::Zero,
+
+        [switch]$TwelveHour,
+        [switch]$ShowSeconds,
+
+        [switch]$NoColor,
+        [switch]$Ascii,
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
+    )
+
+    Assert-InteractiveHost 'Read-Time'
+
+    $asciiOn   = if ($PSBoundParameters.ContainsKey('Ascii'))   { [bool]$Ascii }   else { $script:_AsciiMode }
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $g = Get-Glyphs $asciiOn
+
+    # Internal state is always 24h regardless of display mode. Clamp the
+    # incoming TimeSpan's hour/minute/second components to a single day.
+    $totalHours = [Math]::Max(0, [Math]::Min(23, [int]$InitialTime.Hours))
+    $minute = [Math]::Max(0, [Math]::Min(59, [int]$InitialTime.Minutes))
+    $second = [Math]::Max(0, [Math]::Min(59, [int]$InitialTime.Seconds))
+
+    # Positional field list. AM/PM (P) always comes last, after the optional
+    # seconds field — matches the visual "HH:MM:SS AM" ordering.
+    $fieldNames = [System.Collections.Generic.List[string]]::new()
+    [void]$fieldNames.Add('H')
+    [void]$fieldNames.Add('M')
+    if ($ShowSeconds) { [void]$fieldNames.Add('S') }
+    if ($TwelveHour)  { [void]$fieldNames.Add('P') }
+    $lastFieldIdx = $fieldNames.Count - 1
+
+    $focusedIdx = 0
+    $inputMode = 'selection'
+    $typeBuffer = ''
+
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+    Write-Host "`e[?25l" -NoNewline
+    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
+
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
+    $running = $true
+    $result = $null
+
+    # Commit the digit buffer into the focused field's value. Dot-sourced so
+    # the assignments hit the loop's scope, not a child.
+    $commitBuffer = {
+        if ([string]::IsNullOrEmpty($typeBuffer)) { return }
+        $n = $fieldNames[$focusedIdx]
+        if ($n -in 'H','M','S') {
+            $val = [int]$typeBuffer
+            switch ($n) {
+                'H' {
+                    if ($TwelveHour) {
+                        # Buffer holds a 12-hour clock value (1-12). Preserve
+                        # the current AM/PM by reading $totalHours's >= 12
+                        # state before recomputing.
+                        $val = [Math]::Max(1, [Math]::Min(12, $val))
+                        $isPM = ($totalHours -ge 12)
+                        $totalHours = if ($val -eq 12) {
+                            if ($isPM) { 12 } else { 0 }
+                        } else {
+                            if ($isPM) { $val + 12 } else { $val }
+                        }
+                    } else {
+                        $totalHours = [Math]::Max(0, [Math]::Min(23, $val))
+                    }
+                }
+                'M' { $minute = [Math]::Max(0, [Math]::Min(59, $val)) }
+                'S' { $second = [Math]::Max(0, [Math]::Min(59, $val)) }
+            }
+        }
+        $typeBuffer = ''
+    }
+
+    # Increment/decrement the focused field (selection-mode Up/Down).
+    $adjustField = {
+        param([int]$delta)
+        $n = $fieldNames[$focusedIdx]
+        switch ($n) {
+            'H' { $totalHours = (($totalHours + $delta) % 24 + 24) % 24 }
+            'M' { $minute     = (($minute + $delta) % 60 + 60) % 60 }
+            'S' { $second     = (($second + $delta) % 60 + 60) % 60 }
+            'P' {
+                # AM/PM toggles by flipping 12 hours regardless of $delta's sign.
+                if ($totalHours -ge 12) { $totalHours -= 12 } else { $totalHours += 12 }
+            }
+        }
+    }
+
+    # Render one field's text — the in-progress buffer when typing into it,
+    # otherwise the field's current value formatted "00".
+    $fieldText = {
+        param([int]$idx)
+        $n = $fieldNames[$idx]
+        if ($idx -eq $focusedIdx -and $inputMode -eq 'type' -and $typeBuffer.Length -gt 0 -and $n -in 'H','M','S') {
+            return $typeBuffer.PadRight(2, '_')
+        }
+        switch ($n) {
+            'H' {
+                if ($TwelveHour) {
+                    $h = $totalHours % 12
+                    if ($h -eq 0) { $h = 12 }
+                    return ('{0:00}' -f $h)
+                }
+                return ('{0:00}' -f $totalHours)
+            }
+            'M' { return ('{0:00}' -f $minute) }
+            'S' { return ('{0:00}' -f $second) }
+            'P' { return $(if ($totalHours -ge 12) { 'PM' } else { 'AM' }) }
+        }
+    }
+
+    # Render the whole time line with the focused field highlighted. Color
+    # mode uses cyan bg; type mode adds blink to mark active editing. No-color
+    # mode uses bracket markers — selection vs type is disambiguated by the
+    # underscore padding inside the buffer rather than by changing the marker
+    # shape (mode is also visible in the footer).
+    $renderLine = {
+        $sb = New-Object System.Text.StringBuilder
+        for ($i = 0; $i -lt $fieldNames.Count; $i++) {
+            $name = $fieldNames[$i]
+            if ($i -gt 0) {
+                if ($name -eq 'P') { [void]$sb.Append(' ') }
+                else { [void]$sb.Append(':') }
+            }
+            $text = & $fieldText $i
+            if ($i -eq $focusedIdx) {
+                if ($noColorOn) {
+                    [void]$sb.Append("[$text]")
+                } else {
+                    $blink = if ($inputMode -eq 'type') { '5;' } else { '' }
+                    [void]$sb.Append("`e[${blink}46;30m$text`e[0m")
+                }
+            } else {
+                [void]$sb.Append($text)
+            }
+        }
+        return $sb.ToString()
+    }
+
+    try {
+        $firstRender = $true
+        $lastHeight = 0
+
+        while ($running) {
+            if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+                Write-Host "`e[$($lastHeight)A" -NoNewline
+            } elseif ($firstRender -and ($X -lt 0 -and $Y -lt 0)) {
+                Write-Host ""
+            }
+            $firstRender = $false
+
+            $header = @($Prompt)
+            $body = @(& $renderLine)
+
+            $s = $script:_Strings
+            $footerLines = [System.Collections.Generic.List[string]]::new()
+            if ($inputMode -eq 'type') {
+                [void]$footerLines.Add("Tab/Enter/Esc/$($g.ArrowsUpDown)=$($s.Footer_BackToSelection)")
+            } else {
+                [void]$footerLines.Add("$($g.ArrowLeft)$($g.ArrowRight) $($s.Footer_Field)   $($g.ArrowsUpDown) $($s.Footer_Adjust)   Tab/Type=$($s.Footer_Edit)   Enter=$($s.Footer_Confirm)   Esc=$($s.Footer_Cancel)")
+            }
+            $footer = @($footerLines)
+
+            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
+                -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
+                -SectionRules -Ascii:$asciiOn -PassThru
+
+            if ($newHeight -lt $lastHeight -and $X -lt 0 -and $Y -lt 0) {
+                $diff = $lastHeight - $newHeight
+                for ($h = 0; $h -lt $diff; $h++) { Write-Host "`e[K" }
+                Write-Host "`e[$($diff)A" -NoNewline
+            }
+            $lastHeight = $newHeight
+
+            $key = [Console]::ReadKey($true)
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            }
+
+            # Tab: toggle modes. Leaving type mode commits the pending buffer.
+            if ($key.Key -eq 'Tab') {
+                if ($inputMode -eq 'type') {
+                    . $commitBuffer
+                    $inputMode = 'selection'
+                } else {
+                    $inputMode = 'type'
+                }
+                continue
+            }
+
+            if ($inputMode -eq 'type') {
+                if ($key.Key -eq 'Backspace') {
+                    if ($typeBuffer.Length -gt 0) {
+                        $typeBuffer = $typeBuffer.Substring(0, $typeBuffer.Length - 1)
+                    }
+                    continue
+                }
+                # Arrows / Enter exit type mode (commit pending buffer). Matches
+                # Get-PaginatedSelection's "nav keys exit search mode" pattern.
+                if ($key.Key -in 'UpArrow','DownArrow','LeftArrow','RightArrow','Enter') {
+                    . $commitBuffer
+                    $inputMode = 'selection'
+                    continue
+                }
+                if ($key.Key -eq 'Escape') {
+                    # Esc in type mode discards the buffer rather than committing —
+                    # the user is signalling "I don't want this edit."
+                    $typeBuffer = ''
+                    $inputMode = 'selection'
+                    continue
+                }
+                $name = $fieldNames[$focusedIdx]
+                if ($name -eq 'P') {
+                    # AM/PM field accepts a/p shortcuts directly; no buffer needed.
+                    if ([char]::IsLetter($key.KeyChar)) {
+                        $c = [char]::ToLower($key.KeyChar)
+                        if ($c -eq 'a' -and $totalHours -ge 12) { $totalHours -= 12 }
+                        elseif ($c -eq 'p' -and $totalHours -lt 12) { $totalHours += 12 }
+                    }
+                    continue
+                }
+                if ([char]::IsDigit($key.KeyChar)) {
+                    if ($typeBuffer.Length -lt 2) {
+                        $typeBuffer += $key.KeyChar
+                        # Auto-advance when the buffer fills, mid-type — lets
+                        # the user type "1430" straight through HH:MM.
+                        if ($typeBuffer.Length -eq 2 -and $focusedIdx -lt $lastFieldIdx) {
+                            . $commitBuffer
+                            $focusedIdx++
+                        }
+                    } elseif ($focusedIdx -lt $lastFieldIdx) {
+                        # Buffer already full — treat the extra digit as the
+                        # start of the next field's value.
+                        . $commitBuffer
+                        $focusedIdx++
+                        $typeBuffer = "$($key.KeyChar)"
+                    }
+                    # At the last field with a full buffer the keystroke is dropped.
+                }
+                continue
+            }
+
+            # Selection mode
+            switch ($key.Key) {
+                'LeftArrow'  { if ($focusedIdx -gt 0) { $focusedIdx-- } }
+                'RightArrow' { if ($focusedIdx -lt $lastFieldIdx) { $focusedIdx++ } }
+                'UpArrow'    { . $adjustField 1 }
+                'DownArrow'  { . $adjustField -1 }
+                'Enter' {
+                    $result = [TimeSpan]::new($totalHours, $minute, $second)
+                    $running = $false
+                }
+                'Escape' {
+                    $result = $null
+                    $running = $false
+                }
+                default {
+                    # Any printable input from selection mode either enters
+                    # type mode (digit) or applies an AM/PM shortcut directly
+                    # (letter on the P field) — no need to bounce through
+                    # type mode for the latter.
+                    if ($key.KeyChar -ne [char]0 -and -not [char]::IsControl($key.KeyChar)) {
+                        $name = $fieldNames[$focusedIdx]
+                        if ($name -eq 'P' -and [char]::IsLetter($key.KeyChar)) {
+                            $c = [char]::ToLower($key.KeyChar)
+                            if ($c -eq 'a' -and $totalHours -ge 12) { $totalHours -= 12 }
+                            elseif ($c -eq 'p' -and $totalHours -lt 12) { $totalHours += 12 }
+                        } elseif ([char]::IsDigit($key.KeyChar) -and $name -in 'H','M','S') {
+                            $inputMode = 'type'
+                            $typeBuffer = "$($key.KeyChar)"
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        if (-not $firstRender -and $X -lt 0 -and $Y -lt 0) {
+            Write-Host "`e[$($lastHeight)A" -NoNewline
+        }
+        Write-Host "`e[J" -NoNewline
+        if ($originalCursorVisible) { Write-Host "`e[?25h" -NoNewline }
+        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
+        [Console]::TreatControlCAsInput = $origCtrlC
+        if ($null -eq $result) { Write-Host "" }
+    }
+
+    return $result
+}
+
+function Read-Timezone {
+    <#
+    .SYNOPSIS
+        Interactive time-zone picker built on Get-PaginatedSelection.
+    .DESCRIPTION
+        Lists installed system time zones and returns the chosen
+        [TimeZoneInfo]. The local zone is highlighted by default; commonly-
+        used zones can be pinned to the top via -PreferredTimezones, marked
+        with a star. Inherits Get-PaginatedSelection's fuzzy search (Tab to
+        enter search mode, type to filter) and Esc cancel.
+    .PARAMETER Prompt
+        Header text. Default: "Select a time zone:".
+    .PARAMETER Default
+        Time-zone ID to highlight initially. Default: the local system zone.
+        Silently ignored if the ID isn't installed.
+    .PARAMETER PreferredTimezones
+        Time-zone IDs to pin to the top of the list (in caller order),
+        marked with a leading star. Unknown IDs are silently skipped — the
+        caller doesn't have to special-case zones that exist on some
+        platforms but not others.
+    .PARAMETER PageSize
+        Items per page passed through to Get-PaginatedSelection. Default: 12.
+    .OUTPUTS
+        [TimeZoneInfo] of the chosen zone, or $null if cancelled.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.TimeZoneInfo])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Select a time zone:',
+
+        [string]$Default = [System.TimeZoneInfo]::Local.Id,
+
+        [string[]]$PreferredTimezones,
+
+        [int]$PageSize = 12,
+
+        [switch]$NoColor,
+        [switch]$Ascii,
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$AltScreen
+    )
+
+    Assert-InteractiveHost 'Read-Timezone'
+
+    $allZones = [System.TimeZoneInfo]::GetSystemTimeZones()
+    $zoneById = @{}
+    foreach ($z in $allZones) { $zoneById[$z.Id] = $z }
+
+    # Preserve caller order for pinned zones; drop unknown IDs silently.
+    $preferred = [System.Collections.Generic.List[System.TimeZoneInfo]]::new()
+    if ($PreferredTimezones) {
+        foreach ($id in $PreferredTimezones) {
+            if ($zoneById.ContainsKey($id)) { [void]$preferred.Add($zoneById[$id]) }
+        }
+    }
+    $preferredIds = [System.Collections.Generic.HashSet[string]]::new([string[]]($preferred | ForEach-Object Id))
+    $rest = $allZones | Where-Object { -not $preferredIds.Contains($_.Id) } | Sort-Object DisplayName
+
+    $items = foreach ($z in @($preferred) + @($rest)) {
+        $marker = if ($preferredIds.Contains($z.Id)) { '* ' } else { '  ' }
+        [PSCustomObject]@{
+            Display = "$marker$($z.Id) - $($z.DisplayName)"
+            Zone    = $z
+        }
+    }
+    $items = @($items)
+
+    $initialIndex = 0
+    if ($Default) {
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            if ($items[$i].Zone.Id -eq $Default) { $initialIndex = $i; break }
+        }
+    }
+
+    # Pass-through the layout/rendering switches so callers can position the
+    # picker the same way they would any other widget in the library.
+    $forwarded = @{
+        Items           = $items
+        Title           = $Prompt
+        DisplayProperty = 'Display'
+        InitialIndex    = $initialIndex
+        PageSize        = $PageSize
+        Searchable      = $true
+        Wrap            = $true
+        Border          = $Border
+        MinWidth        = $MinWidth
+        MaxWidth        = $MaxWidth
+        X               = $X
+        Y               = $Y
+        AltScreen       = $AltScreen
+    }
+    if ($PSBoundParameters.ContainsKey('NoColor')) { $forwarded['NoColor'] = $NoColor }
+    if ($PSBoundParameters.ContainsKey('Ascii'))   { $forwarded['Ascii']   = $Ascii }
+
+    $selected = Get-PaginatedSelection @forwarded
+
+    if ($null -eq $selected) { return $null }
+    return $selected.Zone
+}
+
+# --- Templated input wrappers ------------------------------------------------
+# Thin opinionated wrappers around Read-MaskedInput / Read-ValidatedInput for
+# the most common interactive-input shapes. Each forwards the relevant param
+# subset of the underlying widget and hard-codes the mask or pattern. Callers
+# who need a non-default format should use the underlying widget directly.
+
+# Shared validation patterns (module-private). Centralized so each wrapper
+# and the equivalent demo path read the exact same regex.
+$script:_IPv4Pattern = '^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+$script:_CIDRPattern = '^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(?:[0-9]|[1-2][0-9]|3[0-2])$'
+$script:_EmailPattern = '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+# URL: requires a scheme (http/https/ftp) and a non-empty rest. Permissive on
+# the path/query — anything non-whitespace counts as a valid trailing body.
+# Strict RFC 3986 enforcement is an explicit non-goal; interactive callers
+# almost always want "looks like a URL" not "passes a parser".
+$script:_URLPattern = '^(?:https?|ftp)://[^\s]+$'
+
+function Read-Phone {
+    <#
+    .SYNOPSIS
+        Masked phone-number prompt (North American format).
+    .DESCRIPTION
+        Thin wrapper over Read-MaskedInput with the mask hard-coded to
+        (###) ###-####. For other regional formats (E.164, UK, etc.) use
+        Read-MaskedInput directly with the appropriate mask.
+    .PARAMETER Prompt
+        Label shown before the input. Default: 'Phone:'.
+    .PARAMETER Placeholder
+        Character displayed for empty digit slots. Default: '_'.
+    .PARAMETER AllowIncomplete
+        (Switch) Allow Enter before every slot is filled.
+    .PARAMETER ReturnRaw
+        (Switch) Return only the typed digits, without the formatting characters.
+    .OUTPUTS
+        [string] — the formatted phone number, or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Phone:',
+        [string]$Placeholder = '_',
+        [switch]$AllowIncomplete,
+        [switch]$ReturnRaw,
+        [switch]$NoColor
+    )
+    Read-MaskedInput -Mask '(###) ###-####' -Prompt $Prompt -Placeholder $Placeholder `
+        -AllowIncomplete:$AllowIncomplete -ReturnRaw:$ReturnRaw -NoColor:$NoColor
+}
+
+function Read-Email {
+    <#
+    .SYNOPSIS
+        Email prompt with live regex validation.
+    .DESCRIPTION
+        Thin wrapper over Read-ValidatedInput with a common-practical email
+        pattern. RFC 5322 perfection is not a goal — the pattern accepts the
+        same shapes most websites do.
+    .OUTPUTS
+        [string] — the validated address, or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Email:',
+        [switch]$AllowEmpty,
+        [switch]$NoColor
+    )
+    Read-ValidatedInput -Prompt $Prompt -Pattern $script:_EmailPattern `
+        -AllowEmpty:$AllowEmpty -NoColor:$NoColor
+}
+
+function Read-IPv4 {
+    <#
+    .SYNOPSIS
+        IPv4 address prompt with live regex validation.
+    .DESCRIPTION
+        Thin wrapper over Read-ValidatedInput. The pattern enforces valid
+        octets (0-255) and standard dotted-quad format.
+    .OUTPUTS
+        [string] — the validated address, or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'IPv4 address:',
+        [switch]$AllowEmpty,
+        [switch]$NoColor
+    )
+    Read-ValidatedInput -Prompt $Prompt -Pattern $script:_IPv4Pattern `
+        -AllowEmpty:$AllowEmpty -NoColor:$NoColor
+}
+
+function Read-CIDR {
+    <#
+    .SYNOPSIS
+        IPv4 CIDR-notation prompt with live regex validation.
+    .DESCRIPTION
+        Thin wrapper over Read-ValidatedInput. The pattern enforces valid
+        IPv4 octets plus a /0..32 prefix length. IPv6 CIDR is out of scope
+        for this wrapper — use Read-ValidatedInput with a custom pattern.
+    .OUTPUTS
+        [string] — the validated CIDR string, or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'CIDR notation:',
+        [switch]$AllowEmpty,
+        [switch]$NoColor
+    )
+    Read-ValidatedInput -Prompt $Prompt -Pattern $script:_CIDRPattern `
+        -AllowEmpty:$AllowEmpty -NoColor:$NoColor
+}
+
+function Read-URL {
+    <#
+    .SYNOPSIS
+        URL prompt with live regex validation. Accepts http(s) and ftp.
+    .DESCRIPTION
+        Thin wrapper over Read-ValidatedInput. The pattern requires a
+        scheme (http, https, or ftp) and a non-whitespace remainder.
+        Strict RFC 3986 validation is an explicit non-goal — interactive
+        callers almost always want "looks like a URL" not "passes a parser".
+    .OUTPUTS
+        [string] — the validated URL, or $null on cancel.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'URL:',
+        [switch]$AllowEmpty,
+        [switch]$NoColor
+    )
+    Read-ValidatedInput -Prompt $Prompt -Pattern $script:_URLPattern `
+        -AllowEmpty:$AllowEmpty -NoColor:$NoColor
+}
+
+Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL
