@@ -9,6 +9,7 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Get-PaginatedSelection`](#get-paginatedselection) - A powerful interactive selector for arrays or complex objects
 - [`Read-MaskedInput`](#read-maskedinput) - Formatted input prompt that enforces structure for fixed-length data (phone, MAC)
 - [`Read-ValidatedInput`](#read-validatedinput) - Free-form input field with live regex validation
+- [`Read-Number`](#read-number) - Bounded numeric input ([decimal]) with arrow-key acceleration, optional `-Prefix`/`-Suffix` for units, and `-ThousandsSeparator` for grouped display
 - [`Read-Confirmation`](#read-confirmation) - Dedicated Yes/No prompt with single-key or arrow-key navigation
 - [`Read-Password`](#read-password) - Masked password prompt that returns a `SecureString` by default
 - [`Read-Choice`](#read-choice) - One-line N-option selector with optional multi-select
@@ -20,6 +21,9 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Read-IPv4`](#templated-input-wrappers) - Regex-validated IPv4 address, wraps `Read-ValidatedInput`
 - [`Read-CIDR`](#templated-input-wrappers) - Regex-validated IPv4 CIDR notation, wraps `Read-ValidatedInput`
 - [`Read-URL`](#templated-input-wrappers) - Regex-validated URL, wraps `Read-ValidatedInput`
+- [`Read-Percentage`](#numeric-input-wrappers) - Percentage prompt (0..100) with optional `-Bar` for live progress visualization, wraps `Read-Number`
+- [`Read-Temperature`](#numeric-input-wrappers) - Temperature prompt with locale-derived unit default (°C / °F / K), wraps `Read-Number`
+- [`Read-Currency`](#numeric-input-wrappers) - Currency-amount prompt with locale-derived symbol and precision (ISO 4217), wraps `Read-Number`
 - [`Invoke-NestedMenu`](#invoke-nestedmenu) - Hierarchical menu for non-paginated, deep-tree navigation
 - [`Write-TuiBox`](#write-tuibox) - The underlying layout engine, also available for standalone use
 - [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
@@ -156,6 +160,63 @@ $ip = Read-ValidatedInput -Prompt "Enter IP:" -Pattern $ipv4Regex
 # Email Address
 $emailRegex = '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 $email = Read-ValidatedInput -Prompt "Enter Email:" -Pattern $emailRegex
+```
+
+---
+
+### `Read-Number`
+A bounded numeric input field for integers or fixed-precision decimals, with arrow-key acceleration, optional unit decoration, and thousands-separator display.
+
+**Features:**
+- Live **green** / **red** coloring based on whether the current buffer parses as a number inside `[Min, Max]` at the configured precision.
+- **Hold-to-accelerate arrows:** holding `Up` or `Down` grows the step by one order of magnitude per second of hold (`factor = 10^(holdMs/1000)`). At a ~30Hz terminal repeat that's ~30 ticks per decade, so the user actually sees and can release at intermediate step magnitudes (1, 2, 5, 10, 20, 50, ...). Peak step is capped at `range / (BaseStep * 30)` so big ranges still reach useful traversal speed.
+- **Speed-scaled brake near limits:** as you approach `Min` or `Max`, a linear dampener with a brake zone of `3 * factor * BaseStep` closes ~33% of the remaining distance per tick — the brake completes in ~20 ticks regardless of how large the range is. Single-tick precision is restored in the last few units.
+- **Decimal-clean arithmetic:** internal math uses `[decimal]` end-to-end (not `[double]`), so display and stepping stay exact under `-Precision` and `-ThousandsSeparator`.
+- **Unit decoration:** `-Prefix` and `-Suffix` wrap the numeric value with literal strings (`"$"`, `" %"`, `" km/h"`, `" °C"`). The widget renders them but does not measure CJK width — wide-character suffixes are passed through literally.
+- **Culture-aware separators:** `-ThousandsSeparator` renders the value using the current culture's grouping (en-US `1,234,567`, de-DE `1.234.567`) and accepts the grouping character during typed input. The decimal mark also follows the current culture.
+- **Paste safety:** bracketed-paste mode delivers pasted content as one unit. Pasted text is parsed as a single number and rejected wholesale (with a visible warning) if it doesn't fit `-Precision` and `[Min, Max]` — matches `Read-ValidatedInput`'s reject-paste convention.
+- **`-Decorator` hook:** an optional scriptblock called once per render with the current parsed value; whatever string it returns is written between the prompt and the prefix. Used by [`Read-Percentage`](#numeric-input-wrappers) `-Bar` to render a live progress bar, and available for any future value-driven decoration (signal bars, level meters, sparklines).
+
+**Parameters:**
+- `-Prompt`: (Required) The text displayed before the input field.
+- `-Min`: (Required) Minimum allowed value (inclusive). `[decimal]`.
+- `-Max`: (Required) Maximum allowed value (inclusive). `[decimal]`.
+- `-Default`: Initial value. Defaults to `0` if `0` is in `[Min, Max]`, otherwise `Min`.
+- `-Step`: The base arrow-key increment (the value the acceleration curve scales). Defaults to `1` when `-Precision 0`; `10^-Precision` otherwise.
+- `-Precision`: Decimal places, `0`..`6`. `0` (default) gives integer behavior; typing `.` is rejected.
+- `-Prefix`: Literal string shown before the number (e.g. `"$"`). Default: empty.
+- `-Suffix`: Literal string shown after the number (e.g. `" %"`, `" km/h"`, `" °C"`). Default: empty.
+- `-ThousandsSeparator`: (Switch) Render and accept the current culture's grouping separator.
+- `-NoColor`: (Switch) Disable ANSI styling. Cursor becomes `[X]`-bracketed and validity is signaled by a trailing `[OK]`/`[??]` marker instead of red/green coloring. See [Rendering Modes](#rendering-modes).
+- `-Decorator`: (`[scriptblock]`) Per-render hook. Invoked with the current parsed value (or last-valid value during transient invalid edits); the returned string is written between the prompt and the prefix. The decorator owns its own ANSI escapes if it wants color.
+
+**Shortcuts:**
+- `Up` / `Down`: Increment / decrement by the (accelerated) step; clamps to `[Min, Max]`. Held arrows accelerate continuously.
+- `PageUp` / `PageDown`: Jump by `10 * Step` without acceleration — predictable big-step escape hatch.
+- `Left` / `Right`: Move cursor within the buffer.
+- `Home` / `End`: Move cursor to the beginning or end of the buffer.
+- `Backspace` / `Delete`: Edit the buffer.
+- Digit keys: Insert at cursor.
+- `-`: Only at buffer position 0 and only when `Min < 0`; otherwise rejected.
+- `.` (or the current culture's decimal mark): Only when `-Precision > 0` and only once; otherwise rejected.
+- Thousands separator: Only when `-ThousandsSeparator` is on.
+- Other printable characters: Silently dropped.
+- `Enter`: Commit if the buffer parses and is in range.
+- `Esc`: Cancel (returns `$null`).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Port number
+$port = Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
+
+# Percentage with a suffix
+$pct = Read-Number -Prompt 'Coverage:' -Min 0 -Max 100 -Suffix ' %'
+
+# Currency-like field — two decimals, dollar prefix, grouped display
+$amount = Read-Number -Prompt 'Amount:' -Min 0 -Max 1000000000 `
+    -Precision 2 -Prefix '$' -ThousandsSeparator
 ```
 
 ---
@@ -415,6 +476,41 @@ $phone = Read-Phone -Prompt 'Customer phone:'
 $email = Read-Email -Prompt 'Notification address:' -AllowEmpty
 $lan   = Read-CIDR  -Prompt 'LAN range:'
 $endpoint = Read-URL -Prompt 'Webhook target:'
+```
+
+---
+
+### Numeric input wrappers
+Thin opinionated wrappers around [`Read-Number`](#read-number) for the three most common numeric-input shapes. Each derives sensible defaults from the user's region or culture and forwards the relevant param subset of `Read-Number` — for ranges or formats that don't match the wrapper's defaults, use `Read-Number` directly.
+
+| Wrapper | Bounds / format | Locale-derived defaults | Wrapper-specific switches |
+|---|---|---|---|
+| `Read-Percentage` | `0`..`100`, ` %` suffix | — | `-AsFraction` (returns `value/100`), `-Bar` + `-BarWidth` (default 20) for live progress bar, `-Ascii` to force `#`/`-` glyphs |
+| `Read-Temperature` | Per-unit terrestrial-weather bounds | `-Unit` from `[RegionInfo]::CurrentRegion`: **Fahrenheit** for US, BS, BZ, KY, PW, FM, MH, LR; **Celsius** elsewhere. Kelvin is opt-in only. | `-Unit Celsius`/`Fahrenheit`/`Kelvin` — per-unit `-Min`/`-Max`/`-Default` can each be overridden independently |
+| `Read-Currency` | `0`..`999,999,999` default | `-Currency` from `[RegionInfo]::CurrentRegion.ISOCurrencySymbol`. Symbol, decimal places, and prefix/suffix placement derived from the currency's `CultureInfo.NumberFormat` (USD → `$1,234.56`/2dp, EUR under European cultures → `1.234,56 €`/2dp, JPY → `¥1234`/0dp, BHD → 3dp). Unknown ISO codes fall back to literal-prefix + 2dp. | `-Currency <ISO 4217>` — always passes `-ThousandsSeparator`. Captures only; does **not** convert between currencies |
+
+All three accept `-Prompt`, `-Default`, `-Precision`, and `-NoColor` and forward them to `Read-Number`. Each returns a `[decimal]` (or `$null` on cancel) — `Read-Percentage -AsFraction` returns the value divided by 100 (so `75` → `0.75`).
+
+**`Read-Percentage -Bar` callout:** the bar renders between the prompt and the numeric value and updates each tick as arrow keys or typing change the value (e.g. `Coverage: [██████████░░░░░░░░░░] 50 %`). Filled portion is green, empty portion dim gray in color mode; `-NoColor` drops the ANSI. `-Ascii` (or `$env:PWSHTUI_ASCII=1`) forces `#`/`-` glyphs instead of `█`/`░`.
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Percentage with live bar
+$coverage = Read-Percentage -Prompt 'Coverage:' -Default 50 -Bar
+
+# Region-default temperature unit (Celsius outside US/etc., Fahrenheit inside)
+$ambient = Read-Temperature -Prompt 'Ambient:'
+
+# Body temperature — override the unit and tighten the bounds
+$body = Read-Temperature -Prompt 'Body temp:' -Unit Celsius -Min 30 -Max 45 -Default 37 -Precision 1
+
+# Region-default currency, with two decimals derived from the currency
+$price = Read-Currency -Prompt 'Price:' -Default 9.99
+
+# Explicit currency (Japanese yen — no decimals, ¥ prefix)
+$jpyPrice = Read-Currency -Prompt 'Price:' -Currency JPY
 ```
 
 ---
