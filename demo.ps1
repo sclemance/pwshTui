@@ -391,6 +391,30 @@ function Show-TimeTwelveDemo {
     Wait-ReturnKey
 }
 
+function Show-NumberDemo {
+    Write-DemoHeader (Get-DemoString 'Header_Number')
+    Write-Host (Get-DemoString 'Hint_Number1') -ForegroundColor DarkGray
+    Write-Host (Get-DemoString 'Hint_Number2') -ForegroundColor DarkGray
+
+    $port = Read-Number -Prompt (Get-DemoString 'Prompt_Port') -Min 1 -Max 65535 -Default 8080
+    if ($null -ne $port) { Write-Host (Get-DemoString 'Result_Captured' $port) -ForegroundColor Green }
+
+    $pct = Read-Number -Prompt (Get-DemoString 'Prompt_Coverage') -Min 0 -Max 100 -Default 75 -Suffix ' %'
+    if ($null -ne $pct) { Write-Host (Get-DemoString 'Result_Captured' "$pct%") -ForegroundColor Green }
+
+    $temp = Read-Number -Prompt (Get-DemoString 'Prompt_Temperature') -Min -50 -Max 150 -Default 20 -Suffix ([char]0x00B0 + 'C')
+    if ($null -ne $temp) { Write-Host (Get-DemoString 'Result_Captured' "$temp$([char]0x00B0)C") -ForegroundColor Green }
+
+    $big = Read-Number -Prompt (Get-DemoString 'Prompt_Budget') -Min 0 -Max 1000000000 -Default 1000000 -ThousandsSeparator
+    if ($null -ne $big) { Write-Host (Get-DemoString 'Result_Captured' $big) -ForegroundColor Green }
+
+    $amt = Read-Number -Prompt (Get-DemoString 'Prompt_Amount') -Min 0 -Max 1000000 -Default 9.99 `
+        -Precision 2 -Prefix '$' -ThousandsSeparator
+    if ($null -ne $amt) { Write-Host (Get-DemoString 'Result_Captured' ('${0:N2}' -f $amt)) -ForegroundColor Green }
+
+    Wait-ReturnKey
+}
+
 function Show-TemplatedWrappersDemo {
     Write-DemoHeader (Get-DemoString 'Header_TemplatedWrappers')
     Write-Host (Get-DemoString 'Hint_Templated') -ForegroundColor DarkGray
@@ -455,6 +479,7 @@ while ($running) {
             @{ Label = (Get-DemoString 'Menu_ValidatedInput');    Value = "validated" }
             @{ Label = (Get-DemoString 'Menu_Confirmation');      Value = "confirm" }
             @{ Label = (Get-DemoString 'Menu_ChoiceSelector');    Value = "choice" }
+            @{ Label = (Get-DemoString 'Menu_NumberInput');       Value = "number" }
             @{ Label = (Get-DemoString 'Menu_TemplatedWrappers'); Value = "templated" }
         )}
         @{ Label = (Get-DemoString 'Menu_Group_DateTime'); Children = @(
@@ -497,6 +522,7 @@ while ($running) {
         'validated'         { Show-ValidatedInputDemo }
         'confirm'           { Show-ConfirmationDemo }
         'choice'            { Show-ChoiceDemo }
+        'number'            { Show-NumberDemo }
         'templated'         { Show-TemplatedWrappersDemo }
         'spinner'           { Show-SpinnerDemo }
         'spinner_timer'     { Show-SpinnerTimerDemo }

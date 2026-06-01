@@ -23,6 +23,7 @@ Menu_PasswordInput            = Password Input (SecureString, confirm, PIN)
 Menu_ValidatedInput           = Validated Input (IPv4, CIDR, email)
 Menu_Confirmation             = Yes/No Confirmation
 Menu_ChoiceSelector           = Choice Selector (single + multi)
+Menu_NumberInput              = Number Input (units, separators, accelerating arrows)
 Menu_TemplatedWrappers        = Templated Wrappers (Phone, Email, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (inline fields)
@@ -56,6 +57,7 @@ Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
+Header_Number                 = Read-Number (units, separators, accelerating arrows)
 Header_Spinner                = Show-Spinner (default Braille)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — all six styles, 1.5s each
@@ -76,6 +78,8 @@ Hint_Password2                = Strength indicator appears live to the right of 
 Hint_Confirmation             = Y/N for instant answer; Left/Right/Tab to move highlight; Enter to confirm; Esc to cancel.
 Hint_Choice                   = Arrow keys or digit 1-N to move; Enter to confirm; Esc to cancel.
 Hint_ChoiceMulti              = Multi-select: Space toggles, digits move focus, Enter returns the array.
+Hint_Number1                  = Up/Down to nudge, hold to accelerate (curve scales with range and slows near limits). PgUp/PgDn jump by 10*Step.
+Hint_Number2                  = Type digits to edit directly; Backspace/Delete edit the buffer; Enter commits when in range; Esc cancels.
 Hint_Spinner                  = Running a 2-second sleep...
 Hint_SpinnerTimer             = Running a 3.5-second sleep with the live elapsed-time counter...
 Hint_SpinnerStylesAscii       = ASCII mode is on — -Ascii forces Style=Ascii regardless of -Style, so all four render as the Ascii glyph below. Toggle ASCII off to see each style as-named.
@@ -110,6 +114,11 @@ Prompt_EmailShort             = Email:
 Prompt_IPv4Short              = IPv4 address:
 Prompt_CIDRShort              = CIDR notation:
 Prompt_URL                    = URL:
+Prompt_Port                   = Port:
+Prompt_Coverage               = Coverage:
+Prompt_Temperature            = Temperature:
+Prompt_Budget                 = Budget:
+Prompt_Amount                 = Amount:
 
 Activity_Working              = Working
 Activity_Querying             = Querying

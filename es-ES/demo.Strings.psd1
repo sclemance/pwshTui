@@ -21,6 +21,7 @@ Menu_PasswordInput            = Entrada de contraseña (SecureString, confirmar,
 Menu_ValidatedInput           = Entrada validada (IPv4, CIDR, correo)
 Menu_Confirmation             = Confirmación Sí/No
 Menu_ChoiceSelector           = Selector de opciones (simple + múltiple)
+Menu_NumberInput              = Entrada numérica (unidades, separadores, flechas aceleradas)
 Menu_TemplatedWrappers        = Envoltorios con plantilla (Teléfono, Correo, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (campos en línea)
@@ -54,6 +55,7 @@ Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
+Header_Number                 = Read-Number (unidades, separadores, flechas aceleradas)
 Header_Spinner                = Show-Spinner (Braille por defecto)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — los seis estilos, 1,5 s cada uno
@@ -74,6 +76,8 @@ Hint_Password2                = El indicador de fuerza aparece en vivo a la dere
 Hint_Confirmation             = S/N para respuesta instantánea; Izq./Der./Tab para mover; Entrar para confirmar; Esc para cancelar.
 Hint_Choice                   = Flechas o dígito 1-N para mover; Entrar para confirmar; Esc para cancelar.
 Hint_ChoiceMulti              = Multi-selección: Espacio alterna, dígitos mueven el foco, Entrar devuelve el array.
+Hint_Number1                  = Arriba/Abajo para ajustar, mantener para acelerar (la curva se adapta al rango y se ralentiza cerca de los límites). RePág/AvPág saltan 10*Step.
+Hint_Number2                  = Escriba dígitos para editar directamente; Retroceso/Supr modifican el búfer; Entrar confirma si está en rango; Esc cancela.
 Hint_Spinner                  = Ejecutando una pausa de 2 segundos...
 Hint_SpinnerTimer             = Ejecutando una pausa de 3,5 segundos con contador en vivo...
 Hint_SpinnerStylesAscii       = El modo ASCII está activado — -Ascii fuerza Style=Ascii independientemente de -Style, así que los cuatro se renderizan como el glifo Ascii. Desactive ASCII para ver cada estilo nombrado.
@@ -108,6 +112,11 @@ Prompt_EmailShort             = Correo:
 Prompt_IPv4Short              = Dirección IPv4:
 Prompt_CIDRShort              = Notación CIDR:
 Prompt_URL                    = URL:
+Prompt_Port                   = Puerto:
+Prompt_Coverage               = Cobertura:
+Prompt_Temperature            = Temperatura:
+Prompt_Budget                 = Presupuesto:
+Prompt_Amount                 = Importe:
 
 Activity_Working              = Trabajando
 Activity_Querying             = Consultando

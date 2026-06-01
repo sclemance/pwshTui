@@ -2146,6 +2146,486 @@ function Read-ValidatedInput {
     return $finalStr
 }
 
+function Format-NumberValue {
+    # Internal: render a [decimal] for display. "N{Precision}" uses culture
+    # thousands separators; "F{Precision}" omits them. Decimal formatting
+    # is used throughout so values stay exact (no IEEE drift).
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][decimal]$Value,
+        [Parameter(Mandatory)][int]$Precision,
+        [switch]$ThousandsSeparator,
+        [System.Globalization.CultureInfo]$Culture = ([System.Globalization.CultureInfo]::CurrentCulture)
+    )
+    $fmt = if ($ThousandsSeparator) { "N$Precision" } else { "F$Precision" }
+    return $Value.ToString($fmt, $Culture)
+}
+
+function ConvertTo-NumberValue {
+    # Internal: parse a typed/pasted buffer into a bounded [decimal]. Returns
+    # @{ Ok = $bool; Value = [decimal]; Reason = 'empty'|'unparseable'|'precision'|'range'|'' }.
+    # Thousands-separator characters are stripped before TryParse so input is
+    # accepted regardless of whether the user typed them. Excess decimal
+    # places (beyond -Precision) are rejected — silent rounding would let
+    # the rendered value diverge from what the user typed.
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Buffer,
+        [Parameter(Mandatory)][int]$Precision,
+        [decimal]$Min = [decimal]::MinValue,
+        [decimal]$Max = [decimal]::MaxValue,
+        [System.Globalization.CultureInfo]$Culture = ([System.Globalization.CultureInfo]::CurrentCulture)
+    )
+    if ([string]::IsNullOrEmpty($Buffer)) {
+        return @{ Ok = $false; Value = [decimal]0; Reason = 'empty' }
+    }
+    $sep = $Culture.NumberFormat.NumberGroupSeparator
+    $dot = $Culture.NumberFormat.NumberDecimalSeparator
+    $stripped = $Buffer.Replace($sep, '')
+    $styles = [System.Globalization.NumberStyles]::Float -bor [System.Globalization.NumberStyles]::AllowThousands
+    $parsed = [decimal]0
+    if (-not [decimal]::TryParse($stripped, $styles, $Culture, [ref]$parsed)) {
+        return @{ Ok = $false; Value = [decimal]0; Reason = 'unparseable' }
+    }
+    $dotIdx = $stripped.IndexOf($dot)
+    if ($Precision -eq 0 -and $dotIdx -ge 0) {
+        return @{ Ok = $false; Value = $parsed; Reason = 'precision' }
+    }
+    if ($dotIdx -ge 0) {
+        $decimalsTyped = $stripped.Length - $dotIdx - $dot.Length
+        if ($decimalsTyped -gt $Precision) {
+            return @{ Ok = $false; Value = $parsed; Reason = 'precision' }
+        }
+    }
+    if ($parsed -lt $Min -or $parsed -gt $Max) {
+        return @{ Ok = $false; Value = $parsed; Reason = 'range' }
+    }
+    return @{ Ok = $true; Value = $parsed; Reason = '' }
+}
+
+function Get-AcceleratedStep {
+    # Internal: compute the next [decimal] value after a single Up/Down arrow,
+    # given how long the same-direction key has been held. The curve has three
+    # inputs (hold time, total range, proximity to the relevant limit):
+    #
+    #   factor    = min(10^(holdMs/1000), maxFactor)
+    #               grows one order of magnitude per second of hold. At a
+    #               terminal repeat of ~30Hz that's ~30 ticks per decade, so
+    #               the user actually sees and can release at intermediate
+    #               step magnitudes (1, 2, 5, 10, 20, 50, 100, ...) rather
+    #               than skipping straight through the orders.
+    #   maxFactor = max(2, range / (baseStep * 30))
+    #               peak grows linearly with range so big ranges still reach
+    #               useful speeds — a fully-held arrow traverses the full
+    #               range in ~1s at peak. The max(2, ...) floor preserves a
+    #               small amount of acceleration even for tiny ranges.
+    #   dampener  = proxRatio where proxRatio = distance / dampenZone, and
+    #               dampenZone = max(baseStep*5, factor*baseStep*3). Linear
+    #               falloff in a *speed-scaled* zone — the brake distance
+    #               equals about 3 ticks of the user's current speed, so on
+    #               big ranges the brake doesn't start absurdly early and
+    #               the closing trajectory is geometric (~33% of remaining
+    #               distance per tick → ~20-tick brake from peak to limit
+    #               regardless of range). The final max(baseStep, ...) clamp
+    #               restores single-tick precision in the last few units.
+    #
+    # Caller passes the parsed current value, the direction (+1/-1), and the
+    # measured hold time. Returns the clamped, precision-quantized next value.
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory)][decimal]$Current,
+        [Parameter(Mandatory)][int]$Direction,
+        [Parameter(Mandatory)][decimal]$Min,
+        [Parameter(Mandatory)][decimal]$Max,
+        [Parameter(Mandatory)][decimal]$BaseStep,
+        [Parameter(Mandatory)][int]$Precision,
+        [Parameter(Mandatory)][double]$HoldMs
+    )
+    if ($Direction -ne 1 -and $Direction -ne -1) {
+        throw "Get-AcceleratedStep: -Direction must be +1 or -1."
+    }
+    $range = [double]($Max - $Min)
+    if ($range -le 0) {
+        if ($Current -lt $Min) { return $Min }
+        if ($Current -gt $Max) { return $Max }
+        return $Current
+    }
+
+    $rampFactor = [Math]::Pow(10.0, $HoldMs / 1000.0)
+    $maxFactor = [Math]::Max(2.0, $range / ([double]$BaseStep * 30.0))
+    $factor = [Math]::Min($rampFactor, $maxFactor)
+
+    $distanceToLimit = if ($Direction -gt 0) {
+        [double]($Max - $Current)
+    } else {
+        [double]($Current - $Min)
+    }
+    if ($distanceToLimit -lt 0) { $distanceToLimit = 0.0 }
+    $dampenZone = [Math]::Max([double]$BaseStep * 5.0, $factor * [double]$BaseStep * 3.0)
+    $proxRatio = [Math]::Min(1.0, $distanceToLimit / $dampenZone)
+    $dampener = $proxRatio
+
+    $rawStep = [double]$BaseStep * $factor * $dampener
+
+    $quantum = [Math]::Pow(10.0, -[double]$Precision)
+    $quantizedSteps = [Math]::Max(1.0, [Math]::Round($rawStep / $quantum))
+    $stepD = $quantizedSteps * $quantum
+
+    $step = [decimal][Math]::Round($stepD, [Math]::Max(0, $Precision))
+    if ($step -lt $BaseStep) { $step = $BaseStep }
+
+    $next = $Current + [decimal]$Direction * $step
+    if ($next -lt $Min) { $next = $Min }
+    if ($next -gt $Max) { $next = $Max }
+    return $next
+}
+
+function Read-Number {
+    <#
+    .SYNOPSIS
+        Inline numeric input with arrow-key acceleration and unit display.
+    .DESCRIPTION
+        Renders a bounded numeric field decorated with optional Prefix /
+        Suffix strings (e.g. "$", " %", " km/h", " °C"). Arrow Up/Down
+        increment/decrement; held arrows accelerate via a continuous curve
+        derived from hold time, total range, and proximity to the nearest
+        limit (so big ranges traverse quickly without overshooting). PageUp
+        / PageDown jump by 10 * Step without acceleration; Home / End move
+        the text cursor for in-place editing. Direct typing of digits is
+        always accepted; '-' is accepted only at position 0 when Min < 0;
+        the culture's decimal point is accepted only when Precision > 0; the
+        culture's thousands separator is accepted only when -ThousandsSeparator
+        is on. Pasted content must parse to a single in-range number or it
+        is rejected wholesale (same convention as Read-ValidatedInput).
+
+        Internal arithmetic uses [decimal] end-to-end to avoid IEEE-754
+        drift in display and stepping — important when Precision > 0 or
+        when the same value is rendered with grouping separators.
+    .PARAMETER Prompt
+        Label shown before the input field.
+    .PARAMETER Min
+        Minimum allowed value (inclusive).
+    .PARAMETER Max
+        Maximum allowed value (inclusive).
+    .PARAMETER Default
+        Initial value. Defaults to 0 when 0 is in [Min, Max], else Min.
+    .PARAMETER Step
+        Base arrow-key increment (the value the acceleration curve scales).
+        Defaults to 1 when Precision=0; 10^-Precision otherwise.
+    .PARAMETER Precision
+        Decimal places (0-6). 0 (default) gives integer behavior; any '.'
+        in the buffer is rejected.
+    .PARAMETER Prefix
+        Literal string shown before the number (e.g. "$").
+    .PARAMETER Suffix
+        Literal string shown after the number (e.g. " %", " km/h", " °C").
+        Caveat: wide-character suffixes (CJK Wide / Fullwidth) are rendered
+        literally — the widget does not compute their display width.
+    .PARAMETER ThousandsSeparator
+        Render and accept the current culture's thousands separator
+        (e.g. "10,000,000" in en-US, "10.000.000" in de-DE).
+    .PARAMETER NoColor
+        Suppress color; show [OK]/[??] markers in place of green/red text.
+        Defaults to $script:_NoColor (set by NO_COLOR env var at import).
+    .EXAMPLE
+        PS> Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
+    .EXAMPLE
+        PS> Read-Number -Prompt 'Coverage:' -Min 0 -Max 100 -Suffix ' %'
+    .EXAMPLE
+        PS> Read-Number -Prompt 'Amount:' -Min 0 -Max 1000000000 -Precision 2 `
+                        -Prefix '$' -ThousandsSeparator
+    .OUTPUTS
+        [decimal] entered value, or $null on Escape.
+    #>
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Prompt,
+        [Parameter(Mandatory)][decimal]$Min,
+        [Parameter(Mandatory)][decimal]$Max,
+        [decimal]$Default,
+        [decimal]$Step,
+        [ValidateRange(0, 6)][int]$Precision = 0,
+        [string]$Prefix = '',
+        [string]$Suffix = '',
+        [switch]$ThousandsSeparator,
+        [switch]$NoColor
+    )
+
+    Assert-InteractiveHost 'Read-Number'
+
+    if ($Min -gt $Max) {
+        throw "Read-Number: -Min ($Min) must be less than or equal to -Max ($Max)."
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('Default')) {
+        $Default = if ([decimal]0 -ge $Min -and [decimal]0 -le $Max) { [decimal]0 } else { $Min }
+    }
+    if ($Default -lt $Min) { $Default = $Min }
+    if ($Default -gt $Max) { $Default = $Max }
+
+    if (-not $PSBoundParameters.ContainsKey('Step')) {
+        $Step = if ($Precision -eq 0) { [decimal]1 } else { [decimal][Math]::Pow(10.0, -$Precision) }
+    }
+    if ($Step -le 0) {
+        throw "Read-Number: -Step must be greater than 0."
+    }
+
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $culture = [System.Globalization.CultureInfo]::CurrentCulture
+    $sepChar = $culture.NumberFormat.NumberGroupSeparator
+    $dotChar = $culture.NumberFormat.NumberDecimalSeparator
+
+    $lastValidValue = $Default
+    $buffer = Format-NumberValue -Value $Default -Precision $Precision `
+        -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+    $cursor = $buffer.Length
+
+    # Hold-acceleration state. lastArrowDir is the most recent Up/Down direction
+    # (or 0 if the previous event wasn't Up/Down). holdStartTime anchors the
+    # hold; the next consecutive arrow within $holdGapMs of $lastArrowTime
+    # keeps that anchor, otherwise we start a fresh hold.
+    $lastArrowDir = 0
+    $lastArrowTime = [DateTime]::MinValue
+    $holdStartTime = [DateTime]::MinValue
+    $holdGapMs = 80.0
+
+    $originalCursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
+            $originalCursorVisible = $false
+        }
+    } catch {}
+
+    Write-Host "`e[?25l" -NoNewline
+    Write-Host "`e[?2004h" -NoNewline
+
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
+    $running = $true
+    $cancelled = $false
+    $result = $null
+
+    try {
+        while ($running) {
+            $parseResult = ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
+                -Min $Min -Max $Max -Culture $culture
+            $isValid = [bool]$parseResult.Ok
+            if ($isValid) { $lastValidValue = $parseResult.Value }
+
+            if ($noColorOn) {
+                Write-Host "`r$Prompt " -NoNewline
+            } else {
+                Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
+            }
+
+            if ($Prefix) { Write-Host $Prefix -NoNewline }
+
+            if ($noColorOn) {
+                for ($i = 0; $i -le $buffer.Length; $i++) {
+                    if ($i -eq $cursor) {
+                        $ch = if ($i -lt $buffer.Length) { $buffer[$i] } else { ' ' }
+                        Write-Host "[$ch]" -NoNewline
+                    } elseif ($i -lt $buffer.Length) {
+                        Write-Host $buffer[$i] -NoNewline
+                    }
+                }
+            } else {
+                $color = if ($isValid) { 'Green' } else { 'Red' }
+                for ($i = 0; $i -le $buffer.Length; $i++) {
+                    if ($i -eq $cursor) {
+                        $ch = if ($i -lt $buffer.Length) { $buffer[$i] } else { ' ' }
+                        Write-Host $ch -NoNewline -BackgroundColor Cyan -ForegroundColor Black
+                    } elseif ($i -lt $buffer.Length) {
+                        Write-Host $buffer[$i] -NoNewline -ForegroundColor $color
+                    }
+                }
+            }
+
+            if ($Suffix) { Write-Host $Suffix -NoNewline }
+
+            if ($noColorOn) {
+                $marker = if ($isValid) { ' [OK]' } else { ' [??]' }
+                Write-Host $marker -NoNewline
+            }
+
+            Write-Host "`e[K" -NoNewline
+
+            $evt = Read-KeyOrPaste
+
+            if ($evt.Kind -eq 'Discard') {
+                continue
+            }
+
+            if ($evt.Kind -eq 'Paste') {
+                if ($evt.HasControlChars) {
+                    if ($noColorOn) {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
+                    } else {
+                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
+                    }
+                } else {
+                    $pasteParse = ConvertTo-NumberValue -Buffer $evt.Text -Precision $Precision `
+                        -Min $Min -Max $Max -Culture $culture
+                    if ($pasteParse.Ok) {
+                        $buffer = Format-NumberValue -Value $pasteParse.Value -Precision $Precision `
+                            -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                        $cursor = $buffer.Length
+                        $lastValidValue = $pasteParse.Value
+                        if ($evt.TrailingNewline) { $running = $false }
+                    } else {
+                        if ($noColorOn) {
+                            Write-Host "`r`e[K[!] Paste rejected ($($pasteParse.Reason))."
+                        } else {
+                            Write-Host "`r`e[K[!] Paste rejected ($($pasteParse.Reason))." -ForegroundColor Red
+                        }
+                    }
+                }
+                $lastArrowDir = 0
+                $holdStartTime = [DateTime]::MinValue
+                continue
+            }
+
+            $key = $evt.Key
+            if (Test-ControlC $key) {
+                throw [System.Management.Automation.PipelineStoppedException]::new()
+            }
+
+            $thisArrowDir = 0
+
+            switch ($key.Key) {
+                'UpArrow' {
+                    $thisArrowDir = 1
+                    $now = [DateTime]::UtcNow
+                    if ($lastArrowDir -eq 1 -and ($now - $lastArrowTime).TotalMilliseconds -lt $holdGapMs) {
+                        # continue current hold; $holdStartTime unchanged
+                    } else {
+                        $holdStartTime = $now
+                    }
+                    $holdMs = ($now - $holdStartTime).TotalMilliseconds
+                    $lastArrowTime = $now
+                    $base = if ($isValid) { $parseResult.Value } else { $lastValidValue }
+                    $newVal = Get-AcceleratedStep -Current $base -Direction 1 `
+                        -Min $Min -Max $Max -BaseStep $Step -Precision $Precision -HoldMs $holdMs
+                    $buffer = Format-NumberValue -Value $newVal -Precision $Precision `
+                        -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                    $cursor = $buffer.Length
+                }
+                'DownArrow' {
+                    $thisArrowDir = -1
+                    $now = [DateTime]::UtcNow
+                    if ($lastArrowDir -eq -1 -and ($now - $lastArrowTime).TotalMilliseconds -lt $holdGapMs) {
+                        # continue current hold; $holdStartTime unchanged
+                    } else {
+                        $holdStartTime = $now
+                    }
+                    $holdMs = ($now - $holdStartTime).TotalMilliseconds
+                    $lastArrowTime = $now
+                    $base = if ($isValid) { $parseResult.Value } else { $lastValidValue }
+                    $newVal = Get-AcceleratedStep -Current $base -Direction -1 `
+                        -Min $Min -Max $Max -BaseStep $Step -Precision $Precision -HoldMs $holdMs
+                    $buffer = Format-NumberValue -Value $newVal -Precision $Precision `
+                        -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                    $cursor = $buffer.Length
+                }
+                'PageUp' {
+                    $base = if ($isValid) { $parseResult.Value } else { $lastValidValue }
+                    $newVal = $base + ([decimal]10 * $Step)
+                    if ($newVal -gt $Max) { $newVal = $Max }
+                    $buffer = Format-NumberValue -Value $newVal -Precision $Precision `
+                        -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                    $cursor = $buffer.Length
+                }
+                'PageDown' {
+                    $base = if ($isValid) { $parseResult.Value } else { $lastValidValue }
+                    $newVal = $base - ([decimal]10 * $Step)
+                    if ($newVal -lt $Min) { $newVal = $Min }
+                    $buffer = Format-NumberValue -Value $newVal -Precision $Precision `
+                        -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                    $cursor = $buffer.Length
+                }
+                'LeftArrow'  { if ($cursor -gt 0) { $cursor-- } }
+                'RightArrow' { if ($cursor -lt $buffer.Length) { $cursor++ } }
+                'Home'       { $cursor = 0 }
+                'End'        { $cursor = $buffer.Length }
+                'Backspace'  {
+                    if ($cursor -gt 0) {
+                        $buffer = $buffer.Substring(0, $cursor - 1) + $buffer.Substring($cursor)
+                        $cursor--
+                    }
+                }
+                'Delete'     {
+                    if ($cursor -lt $buffer.Length) {
+                        $buffer = $buffer.Substring(0, $cursor) + $buffer.Substring($cursor + 1)
+                    }
+                }
+                'Enter'      {
+                    if ($isValid) { $running = $false }
+                }
+                'Escape'     {
+                    $cancelled = $true
+                    $running = $false
+                }
+                default      {
+                    $ch = $key.KeyChar
+                    if (-not [char]::IsControl($ch)) {
+                        $accept = $false
+                        if ([char]::IsDigit($ch)) {
+                            $accept = $true
+                        } elseif ($ch -eq '-') {
+                            if ($cursor -eq 0 -and $Min -lt 0 -and $buffer.IndexOf('-') -lt 0) {
+                                $accept = $true
+                            }
+                        } elseif ([string]$ch -eq $dotChar) {
+                            if ($Precision -gt 0 -and $buffer.IndexOf($dotChar) -lt 0) {
+                                $accept = $true
+                            }
+                        } elseif ([string]$ch -eq $sepChar) {
+                            if ($ThousandsSeparator) {
+                                $accept = $true
+                            }
+                        }
+                        if ($accept) {
+                            $buffer = $buffer.Substring(0, $cursor) + $ch + $buffer.Substring($cursor)
+                            $cursor++
+                        }
+                    }
+                }
+            }
+
+            $lastArrowDir = $thisArrowDir
+            if ($thisArrowDir -eq 0) {
+                $holdStartTime = [DateTime]::MinValue
+            }
+        }
+
+        if (-not $cancelled) {
+            $finalParse = ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
+                -Min $Min -Max $Max -Culture $culture
+            $result = $finalParse.Value
+        }
+
+        $finalStr = if ($null -eq $result) { '' } else {
+            Format-NumberValue -Value $result -Precision $Precision `
+                -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+        }
+        Write-Host "`r$Prompt $Prefix$finalStr$Suffix`e[K"
+    } finally {
+        Write-Host "`e[?2004l" -NoNewline
+        if ($originalCursorVisible) {
+            Write-Host "`e[?25h" -NoNewline
+        }
+        [Console]::TreatControlCAsInput = $origCtrlC
+        Write-Host ""
+    }
+
+    return $result
+}
+
 function Read-Confirmation {
     <#
     .SYNOPSIS
@@ -4180,4 +4660,4 @@ function Read-URL {
         -AllowEmpty:$AllowEmpty -NoColor:$NoColor
 }
 
-Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL
+Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL

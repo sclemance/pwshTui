@@ -21,6 +21,7 @@ Menu_PasswordInput            = Passworteingabe (SecureString, Bestätigung, PIN
 Menu_ValidatedInput           = Validierte Eingabe (IPv4, CIDR, E-Mail)
 Menu_Confirmation             = Ja/Nein-Bestätigung
 Menu_ChoiceSelector           = Auswahlfeld (einfach + mehrfach)
+Menu_NumberInput              = Zahleneingabe (Einheiten, Trennzeichen, beschleunigende Pfeile)
 Menu_TemplatedWrappers        = Vorlagen-Wrapper (Telefon, E-Mail, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (Inline-Felder)
@@ -54,6 +55,7 @@ Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
+Header_Number                 = Read-Number (Einheiten, Trennzeichen, beschleunigende Pfeile)
 Header_Spinner                = Show-Spinner (Braille-Standard)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — alle sechs Stile, jeweils 1,5 s
@@ -74,6 +76,8 @@ Hint_Password2                = Stärkeanzeige erscheint live rechts neben der m
 Hint_Confirmation             = J/N für Sofortantwort; Links/Rechts/Tab bewegt die Markierung; Enter bestätigt; Esc bricht ab.
 Hint_Choice                   = Pfeiltasten oder Ziffer 1-N zum Bewegen; Enter zum Bestätigen; Esc zum Abbrechen.
 Hint_ChoiceMulti              = Mehrfachauswahl: Leertaste schaltet um, Ziffern bewegen den Fokus, Enter gibt das Array zurück.
+Hint_Number1                  = Hoch/Runter zum Verstellen, halten zum Beschleunigen (Kurve skaliert mit der Spanne und bremst nahe den Grenzen ab). PgUp/PgDn springen um 10*Step.
+Hint_Number2                  = Ziffern direkt eintippen; Backspace/Entf bearbeiten den Puffer; Enter bestätigt, wenn im Bereich; Esc bricht ab.
 Hint_Spinner                  = Führe einen 2-Sekunden-Sleep aus...
 Hint_SpinnerTimer             = Führe einen 3,5-Sekunden-Sleep mit Live-Zeitanzeige aus...
 Hint_SpinnerStylesAscii       = ASCII-Modus ist an — -Ascii erzwingt Style=Ascii unabhängig von -Style, daher rendern alle vier als das Ascii-Glyph unten. ASCII deaktivieren, um jeden Stil wie benannt zu sehen.
@@ -108,6 +112,11 @@ Prompt_EmailShort             = E-Mail:
 Prompt_IPv4Short              = IPv4-Adresse:
 Prompt_CIDRShort              = CIDR-Notation:
 Prompt_URL                    = URL:
+Prompt_Port                   = Port:
+Prompt_Coverage               = Abdeckung:
+Prompt_Temperature            = Temperatur:
+Prompt_Budget                 = Budget:
+Prompt_Amount                 = Betrag:
 
 Activity_Working              = Arbeite
 Activity_Querying             = Abfrage

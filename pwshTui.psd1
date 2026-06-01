@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.9.0'
+    ModuleVersion        = '0.10.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
     Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, date / time / timezone pickers, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,31 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.10.0
+- Read-Number: bounded numeric input ([decimal]) with arrow-key
+  acceleration. Optional -Prefix / -Suffix decorate the field with
+  units ("$", " %", " km/h", " °C"). -Precision 0..6 enables fixed-
+  decimal entry; default 0 gives integer behavior. -ThousandsSeparator
+  renders and accepts the current culture's grouping separator (en-US
+  "10,000,000"; de-DE "10.000.000"). Held Up/Down arrows accelerate
+  via a continuous curve: the step grows one order of magnitude per
+  second of hold (factor = 10^(holdMs/1000)), which at a ~30Hz
+  terminal repeat gives ~30 ticks per decade so the user sees and can
+  release at intermediate magnitudes (1, 2, 5, 10, 20, 50, 100, ...).
+  Peak step is capped at range / (baseStep * 30) so big ranges still
+  reach useful traversal speed; the proximity dampener is linear and
+  uses a speed-scaled brake zone (3 * factor * baseStep) so the closing
+  rate is geometric (~33% of remaining distance per tick) and braking
+  from peak to limit completes in ~20 ticks regardless of range — the
+  final max(baseStep, ...) clamp restores single-tick precision so the
+  user can stop exactly on a limit. Single taps always move by exactly -Step.
+  PageUp/PageDown jump by 10*Step without acceleration. Direct typing
+  of digits, '-' (when Min<0), and the culture's decimal point (when
+  Precision>0) is gated per-char; other printable chars are silently
+  dropped. Pasted content is parsed as a whole number and rejected if
+  it does not fit -Precision and [Min,Max]. Internal arithmetic uses
+  [decimal] to avoid IEEE-754 drift in display and stepping.
+
 0.9.0
 - Templated input wrappers for the most common interactive-input shapes:
   Read-Phone (NA-format masked, wraps Read-MaskedInput), Read-Email,

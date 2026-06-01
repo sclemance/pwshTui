@@ -21,6 +21,7 @@ Menu_PasswordInput            = 密码输入 (SecureString、确认、PIN)
 Menu_ValidatedInput           = 验证输入 (IPv4、CIDR、邮箱)
 Menu_Confirmation             = 是/否确认
 Menu_ChoiceSelector           = 选项选择器 (单选 + 多选)
+Menu_NumberInput              = 数值输入 (单位、千位分隔符、加速方向键)
 Menu_TemplatedWrappers        = 模板封装 (电话、邮箱、IPv4、CIDR、URL)
 
 Menu_DateInline               = Read-Date (内联字段)
@@ -54,6 +55,7 @@ Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
+Header_Number                 = Read-Number (单位、千位分隔符、加速方向键)
 Header_Spinner                = Show-Spinner (默认 Braille)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — 全部六种样式、每种 1.5 秒
@@ -74,6 +76,8 @@ Hint_Password2                = 强度指示在掩码输入右侧实时显示。
 Hint_Confirmation             = Y/N 即时回答；左/右/Tab 移动高亮；Enter 确认；Esc 取消。
 Hint_Choice                   = 方向键或数字 1-N 移动；Enter 确认；Esc 取消。
 Hint_ChoiceMulti              = 多选: 空格切换、数字移动焦点、Enter 返回数组。
+Hint_Number1                  = 上下键增减、按住可加速 (曲线随范围放大、接近上下限时减速)。PgUp/PgDn 跳 10*Step。
+Hint_Number2                  = 直接输入数字编辑；Backspace/Delete 修改缓冲；在范围内时 Enter 确认；Esc 取消。
 Hint_Spinner                  = 正在执行 2 秒休眠...
 Hint_SpinnerTimer             = 正在执行 3.5 秒休眠 (带实时耗时显示)...
 Hint_SpinnerStylesAscii       = ASCII 模式已启用 — -Ascii 强制 Style=Ascii (不论 -Style)，所以四种都以下面的 Ascii 字符渲染。关闭 ASCII 以查看每种样式。
@@ -108,6 +112,11 @@ Prompt_EmailShort             = 邮箱:
 Prompt_IPv4Short              = IPv4 地址:
 Prompt_CIDRShort              = CIDR 表示法:
 Prompt_URL                    = URL:
+Prompt_Port                   = 端口:
+Prompt_Coverage               = 覆盖率:
+Prompt_Temperature            = 温度:
+Prompt_Budget                 = 预算:
+Prompt_Amount                 = 金额:
 
 Activity_Working              = 处理中
 Activity_Querying             = 查询中

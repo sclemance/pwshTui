@@ -20,6 +20,7 @@ Menu_PasswordInput            = パスワード入力 (SecureString、確認、P
 Menu_ValidatedInput           = 検証付き入力 (IPv4、CIDR、メール)
 Menu_Confirmation             = はい/いいえ確認
 Menu_ChoiceSelector           = 選択 (単一 + 複数)
+Menu_NumberInput              = 数値入力 (単位、桁区切り、加速矢印)
 Menu_TemplatedWrappers        = テンプレートラッパー (電話、メール、IPv4、CIDR、URL)
 
 Menu_DateInline               = Read-Date (インライン項目)
@@ -53,6 +54,7 @@ Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
+Header_Number                 = Read-Number (単位、桁区切り、加速矢印)
 Header_Spinner                = Show-Spinner (デフォルト Braille)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — 全 6 スタイル、各 1.5 秒
@@ -73,6 +75,8 @@ Hint_Password2                = 強度インジケータがマスク入力の右
 Hint_Confirmation             = Y/N で即答、左/右/Tab でハイライト移動、Enter で確定、Esc でキャンセル。
 Hint_Choice                   = 矢印または数字 1-N で移動、Enter で確定、Esc でキャンセル。
 Hint_ChoiceMulti              = 複数選択: スペースで切替、数字でフォーカス移動、Enter で配列を返します。
+Hint_Number1                  = ↑↓ で増減、押し続けると加速 (曲線は範囲に応じて拡大し、限界近くで減速)。PgUp/PgDn は 10*Step ジャンプ。
+Hint_Number2                  = 数字を直接入力可、Backspace/Delete でバッファ編集、範囲内なら Enter で確定、Esc でキャンセル。
 Hint_Spinner                  = 2 秒間スリープを実行中...
 Hint_SpinnerTimer             = 3.5 秒間スリープを実行中 (経過時間表示付き)...
 Hint_SpinnerStylesAscii       = ASCII モードが有効です。-Ascii は -Style に関わらず Style=Ascii を強制するため、4 種すべてが下の Ascii グリフで描画されます。ASCII を無効にすると各スタイルが個別に表示されます。
@@ -107,6 +111,11 @@ Prompt_EmailShort             = メール:
 Prompt_IPv4Short              = IPv4 アドレス:
 Prompt_CIDRShort              = CIDR 表記:
 Prompt_URL                    = URL:
+Prompt_Port                   = ポート:
+Prompt_Coverage               = カバレッジ:
+Prompt_Temperature            = 温度:
+Prompt_Budget                 = 予算:
+Prompt_Amount                 = 金額:
 
 Activity_Working              = 処理中
 Activity_Querying             = 問合せ中
