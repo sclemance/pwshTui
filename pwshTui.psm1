@@ -2429,6 +2429,18 @@ function Read-Number {
         Force ASCII bar glyphs ('#'/'-') instead of Unicode ('█'/'░').
         Defaults to $script:_AsciiMode (PWSHTUI_ASCII env var). Only
         meaningful with -Bar.
+    .PARAMETER BufferParser
+        Optional scriptblock that replaces the built-in buffer-validation
+        path. Invoked with the current buffer string; must return a hashtable
+        @{ Ok; Value; Reason }. When set, the per-character typing filter
+        relaxes — any non-control printable character is accepted at the
+        cursor and the parser becomes the sole arbiter of validity. The
+        custom parser also handles paste content. -Min / -Max remain
+        meaningful for arrow-key navigation, PageUp/Down clamping, and the
+        bar fill ratio, so the parser's returned Value must be expressed
+        in the same units as Min / Max. Used internally by Read-Measurement
+        to handle mixed-unit input (e.g. "12ft 3in") that the built-in
+        numeric parser would reject.
     .EXAMPLE
         PS> Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
     .EXAMPLE
@@ -2457,7 +2469,8 @@ function Read-Number {
         [scriptblock]$Decorator,
         [switch]$Bar,
         [ValidateRange(5, 80)][int]$BarWidth = 20,
-        [switch]$Ascii
+        [switch]$Ascii,
+        [scriptblock]$BufferParser
     )
 
     Assert-InteractiveHost 'Read-Number'
@@ -2557,8 +2570,12 @@ function Read-Number {
 
     try {
         while ($running) {
-            $parseResult = ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
-                -Min $Min -Max $Max -Culture $culture
+            $parseResult = if ($BufferParser) {
+                & $BufferParser $buffer
+            } else {
+                ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
+                    -Min $Min -Max $Max -Culture $culture
+            }
             $isValid = [bool]$parseResult.Ok
             if ($isValid) { $lastValidValue = $parseResult.Value }
 
@@ -2623,11 +2640,23 @@ function Read-Number {
                         Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
                     }
                 } else {
-                    $pasteParse = ConvertTo-NumberValue -Buffer $evt.Text -Precision $Precision `
-                        -Min $Min -Max $Max -Culture $culture
+                    $pasteParse = if ($BufferParser) {
+                        & $BufferParser $evt.Text
+                    } else {
+                        ConvertTo-NumberValue -Buffer $evt.Text -Precision $Precision `
+                            -Min $Min -Max $Max -Culture $culture
+                    }
                     if ($pasteParse.Ok) {
-                        $buffer = Format-NumberValue -Value $pasteParse.Value -Precision $Precision `
-                            -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                        # When a custom parser is in play the typed buffer may
+                        # not be a canonical numeric form (e.g. "12ft 3in") —
+                        # preserve it verbatim. Built-in path re-formats so
+                        # grouping separators and precision render cleanly.
+                        $buffer = if ($BufferParser) {
+                            $evt.Text
+                        } else {
+                            Format-NumberValue -Value $pasteParse.Value -Precision $Precision `
+                                -ThousandsSeparator:$ThousandsSeparator -Culture $culture
+                        }
                         $cursor = $buffer.Length
                         $lastValidValue = $pasteParse.Value
                         if ($evt.TrailingNewline) { $running = $false }
@@ -2728,7 +2757,13 @@ function Read-Number {
                     $ch = $key.KeyChar
                     if (-not [char]::IsControl($ch)) {
                         $accept = $false
-                        if ([char]::IsDigit($ch)) {
+                        if ($BufferParser) {
+                            # Custom parser owns the validity contract; widget
+                            # accepts any printable so mixed-unit input like
+                            # "5'11\"" or "12ft 3in" can be typed character by
+                            # character without per-key gating.
+                            $accept = $true
+                        } elseif ([char]::IsDigit($ch)) {
                             $accept = $true
                         } elseif ($ch -eq '-') {
                             if ($cursor -eq 0 -and $Min -lt 0 -and $buffer.IndexOf('-') -lt 0) {
@@ -2768,12 +2803,23 @@ function Read-Number {
         }
 
         if (-not $cancelled) {
-            $finalParse = ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
-                -Min $Min -Max $Max -Culture $culture
+            $finalParse = if ($BufferParser) {
+                & $BufferParser $buffer
+            } else {
+                ConvertTo-NumberValue -Buffer $buffer -Precision $Precision `
+                    -Min $Min -Max $Max -Culture $culture
+            }
             $result = $finalParse.Value
         }
 
-        $finalStr = if ($null -eq $result) { '' } else {
+        $finalStr = if ($null -eq $result) {
+            ''
+        } elseif ($BufferParser) {
+            # The buffer holds the user's free-form text (e.g. "12ft 3in"); the
+            # custom parser converts it to the base-unit value but the
+            # commit-line echoes what they actually typed.
+            $buffer
+        } else {
             Format-NumberValue -Value $result -Precision $Precision `
                 -ThousandsSeparator:$ThousandsSeparator -Culture $culture
         }

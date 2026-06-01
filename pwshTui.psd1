@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.15.0'
+    ModuleVersion        = '0.16.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,25 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.16.0
+- Read-Number gains -BufferParser <scriptblock>: an optional hook that
+  replaces the built-in numeric parsing pipeline. When set, the widget
+  calls the scriptblock on each render with the current buffer and
+  expects @{ Ok; Value; Reason } back; the parser becomes the sole
+  arbiter of validity (same "type anything, the parser decides" model
+  as Read-ValidatedInput). The per-character typing filter relaxes to
+  accept any non-control printable so mixed-format input like "12ft 3in"
+  or "5'11\"" can be typed without per-key gating. Paste content also
+  flows through the custom parser. -Min / -Max still drive arrow-key
+  navigation, PageUp/Down clamping, and the -Bar fill ratio, so the
+  parser's returned Value must be expressed in the same units as Min /
+  Max. The final commit-line echoes the user's typed buffer verbatim
+  rather than the canonicalized numeric form, matching the free-form
+  input model.
+- Plumbing only in this release; no new wrapper consumes -BufferParser
+  yet. Unlocks the upcoming Read-Measurement (mixed-unit measurement
+  input driven by data files in a units/ folder).
+
 0.15.0
 - Read-Number accepts SI-prefix shorthand in typed and pasted input:
   a trailing 'k', 'M', 'G', or 'T' multiplies the parsed value by

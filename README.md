@@ -195,6 +195,7 @@ A bounded numeric input field for integers or fixed-precision decimals, with arr
 - `-Bar`: (Switch) Render a live progress bar between the prompt and the numeric value, tracking how far the current value sits between `-Min` and `-Max`. Updates each tick as the value changes. When both `-Bar` and `-Decorator` are passed, `-Bar` wins.
 - `-BarWidth`: Bar width in characters, `5`..`80`. Default: `20`. Only meaningful with `-Bar`.
 - `-Ascii`: (Switch) Force ASCII bar glyphs (`#`/`-`) instead of Unicode (`█`/`░`). Defaults to `$script:_AsciiMode` (env var `PWSHTUI_ASCII`). Only meaningful with `-Bar`.
+- `-BufferParser`: (`[scriptblock]`) Replace the built-in buffer-validation path. Invoked with the current buffer string; must return `@{ Ok; Value; Reason }`. When set, the per-character typing filter relaxes — any non-control printable character is accepted and the parser becomes the sole arbiter of validity (same "type anything, regex decides" model as `Read-ValidatedInput`). `-Min` / `-Max` remain meaningful for arrow-key navigation, `PageUp`/`PageDown` clamping, and the `-Bar` fill ratio, so the parser's returned `Value` must use the same units. Canonical consumer is [`Read-Measurement`](#read-measurement), which uses it to accept mixed-unit input like `12ft 3in`.
 
 **Shortcuts:**
 - `Up` / `Down`: Increment / decrement by the (accelerated) step; clamps to `[Min, Max]`. Held arrows accelerate continuously.

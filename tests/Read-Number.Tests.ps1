@@ -532,6 +532,97 @@ Describe 'Get-AcceleratedStep' {
 # into a closure) and verify the rendered output for an arbitrary range
 # matches the underlying Format-ValueBar helper.
 
+Describe 'Read-Number -BufferParser' {
+    It 'declares a -BufferParser parameter of type [scriptblock]' {
+        $param = (Get-Command Read-Number).Parameters['BufferParser']
+        $param | Should -Not -BeNullOrEmpty
+        $param.ParameterType.FullName | Should -Be 'System.Management.Automation.ScriptBlock'
+    }
+
+    It 'invokes the parser on the buffer and returns its Value' {
+        # Drive the input loop synthetically: one Enter keypress ends it.
+        # Read-KeyOrPaste and Write-Host are mocked so no real terminal is
+        # touched. The parser captures the buffer it sees so we can both
+        # assert "was it called" and "did Read-Number short-circuit the
+        # built-in numeric pipeline."
+        InModuleScope pwshTui {
+            $script:_SupportsVT = $true
+            $script:parserCalls = 0
+            $script:parserSawBuffer = $null
+
+            Mock Read-KeyOrPaste {
+                [PSCustomObject]@{
+                    Kind = 'Key'
+                    Key  = [System.ConsoleKeyInfo]::new([char]13, [System.ConsoleKey]::Enter, $false, $false, $false)
+                }
+            }
+            Mock Write-Host { }
+            Mock ConvertTo-NumberValue { throw "default parser called when -BufferParser present" }
+
+            $parser = {
+                param($buf)
+                $script:parserCalls++
+                $script:parserSawBuffer = $buf
+                @{ Ok = $true; Value = [decimal]42; Reason = '' }
+            }
+
+            $r = Read-Number -Prompt 'X:' -Min 0 -Max 100 -Default 7 -BufferParser $parser
+
+            $script:parserCalls | Should -BeGreaterThan 0
+            $script:parserSawBuffer | Should -Be '7'
+            $r | Should -Be 42
+        }
+    }
+
+    It 'cancels via Esc with -BufferParser set (returns $null without invoking the default parser)' {
+        InModuleScope pwshTui {
+            $script:_SupportsVT = $true
+
+            Mock Read-KeyOrPaste {
+                [PSCustomObject]@{
+                    Kind = 'Key'
+                    Key  = [System.ConsoleKeyInfo]::new([char]27, [System.ConsoleKey]::Escape, $false, $false, $false)
+                }
+            }
+            Mock Write-Host { }
+            Mock ConvertTo-NumberValue { throw "default parser called when -BufferParser present" }
+
+            $parser = { param($buf) @{ Ok = $true; Value = [decimal]99; Reason = '' } }
+            $r = Read-Number -Prompt 'X:' -Min 0 -Max 100 -Default 5 -BufferParser $parser
+
+            $r | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'blocks Enter while the parser reports Ok=false' {
+        # Two keypresses: Enter (parser will reject) then Esc (cancel). If the
+        # widget were to accept the rejected Enter, it would exit with the
+        # parser's reported Value before Esc could fire — observable here as
+        # a non-null return.
+        InModuleScope pwshTui {
+            $script:_SupportsVT = $true
+            $script:keyIdx = 0
+            $script:keys = @(
+                [System.ConsoleKeyInfo]::new([char]13, [System.ConsoleKey]::Enter,  $false, $false, $false),
+                [System.ConsoleKeyInfo]::new([char]27, [System.ConsoleKey]::Escape, $false, $false, $false)
+            )
+
+            Mock Read-KeyOrPaste {
+                $k = $script:keys[$script:keyIdx]
+                $script:keyIdx++
+                [PSCustomObject]@{ Kind = 'Key'; Key = $k }
+            }
+            Mock Write-Host { }
+
+            $parser = { param($buf) @{ Ok = $false; Value = [decimal]0; Reason = 'always-invalid' } }
+            $r = Read-Number -Prompt 'X:' -Min 0 -Max 100 -Default 0 -BufferParser $parser
+
+            $r | Should -BeNullOrEmpty
+            $script:keyIdx | Should -Be 2
+        }
+    }
+}
+
 Describe 'Read-Number -Bar (non-percentage ranges)' {
     It 'a port-number range (1..65535) at midpoint renders ~half-full bar' {
         # 32768 in [1..65535] → ratio (32767/65534) ≈ 0.4999 → 10/20 cells
