@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.14.0'
+    ModuleVersion        = '0.15.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,35 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.15.0
+- Read-Number accepts SI-prefix shorthand in typed and pasted input:
+  a trailing 'k', 'M', 'G', or 'T' multiplies the parsed value by
+  10^3, 10^6, 10^9, or 10^12 respectively. "1.5M" → 1,500,000;
+  "0.5G" → 500,000,000; "1T" → 1,000,000,000,000. Case-sensitive
+  (lowercase k for kilo per SI convention; uppercase K would clash
+  with Kelvin and the kibibyte notation, so it is NOT accepted).
+  Multi-character byte/bit suffixes (MB, Gb, etc.) are NOT accepted
+  in this release — that would introduce the decimal-vs-binary
+  ambiguity (1 MB = 10^6 or 2^20?) and the widget can not pick the
+  right base from -Min/-Max alone. A future release may add an
+  opt-in -Unit Bytes|Bits parameter for that case.
+- Precision handling under SI: the typed dot in "1.5k" is legitimate
+  because the multiplied result (1500) is integer-valued. The buffer-
+  text precision check that used to reject any '.' under -Precision 0
+  is bypassed when an SI suffix is present, and precision is enforced
+  post-multiplication via modulo against the quantum grid. "1.5k"
+  passes at -Precision 0; "1.5555k" (1555.5) does not. Plain numbers
+  without an SI suffix keep the original UX where any '.' is rejected
+  immediately at -Precision 0 (so the user gets red feedback the
+  moment they type a stray dot, not after the fractional digits).
+- The per-character typing filter in Read-Number now allows k/M/G/T
+  at the end of the buffer only, only once, and only after at least
+  one digit has been typed. The widget re-formats the buffer to the
+  canonical numeric form the next time the value is updated by an
+  arrow key or paste.
+- Range checks always run against the multiplied value, not the
+  typed digits. "1.5k" with -Max 1000 is rejected as out of range.
+
 0.14.0
 - Read-Number gains -Bar / -BarWidth / -Ascii — the live progress
   bar previously available only via Read-Percentage -Bar is now a

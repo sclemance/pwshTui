@@ -175,6 +175,7 @@ A bounded numeric input field for integers or fixed-precision decimals, with arr
 - **Decimal-clean arithmetic:** internal math uses `[decimal]` end-to-end (not `[double]`), so display and stepping stay exact under `-Precision` and `-ThousandsSeparator`.
 - **Unit decoration:** `-Prefix` and `-Suffix` wrap the numeric value with literal strings (`"$"`, `" %"`, `" km/h"`, `" °C"`). The widget renders them but does not measure CJK width — wide-character suffixes are passed through literally.
 - **Culture-aware separators:** `-ThousandsSeparator` renders the value using the current culture's grouping (en-US `1,234,567`, de-DE `1.234.567`) and accepts the grouping character during typed input. The decimal mark also follows the current culture.
+- **SI-prefix shorthand:** a trailing `k` / `M` / `G` / `T` multiplies the parsed value by `10³` / `10⁶` / `10⁹` / `10¹²` — `1.5M` reads as 1,500,000, `0.5G` as 500,000,000. Case-sensitive (lowercase `k` for kilo per SI; uppercase `K` is NOT accepted to avoid the Kelvin/kibibyte clash). Multi-character byte/bit suffixes (`MB`, `Gb`, etc.) are NOT supported in this release — they'd introduce decimal-vs-binary ambiguity. Range and precision are enforced against the multiplied value, so `1.5k` with `-Max 1000` is rejected as out-of-range; `1.5k` with `-Precision 0` is accepted because `1500` is integer-valued.
 - **Paste safety:** bracketed-paste mode delivers pasted content as one unit. Pasted text is parsed as a single number and rejected wholesale (with a visible warning) if it doesn't fit `-Precision` and `[Min, Max]` — matches `Read-ValidatedInput`'s reject-paste convention.
 - **`-Bar` visualization:** an optional live progress bar between the prompt and the numeric value, showing where the current value sits between `-Min` and `-Max` (e.g. `Port: [██████░░░░░░░░░░░░░░] 8080`). Works for any bounded range, not just percentages. `-BarWidth` controls width (default 20); `-Ascii` forces `#`/`-` glyphs.
 - **`-Decorator` hook:** an optional scriptblock called once per render with the current parsed value; whatever string it returns is written between the prompt and the prefix. The framework's `-Bar` is built on top of this; the hook is exposed publicly so callers can render any value-driven decoration (signal bars, level meters, sparklines, ad-hoc status). When both `-Bar` and `-Decorator` are passed, `-Bar` wins.
@@ -205,6 +206,7 @@ A bounded numeric input field for integers or fixed-precision decimals, with arr
 - `-`: Only at buffer position 0 and only when `Min < 0`; otherwise rejected.
 - `.` (or the current culture's decimal mark): Only when `-Precision > 0` and only once; otherwise rejected.
 - Thousands separator: Only when `-ThousandsSeparator` is on.
+- `k` / `M` / `G` / `T` (SI multiplier): Only at end of buffer, only once, only after a digit. Case-sensitive (lowercase `k`).
 - Other printable characters: Silently dropped.
 - `Enter`: Commit if the buffer parses and is in range.
 - `Esc`: Cancel (returns `$null`).

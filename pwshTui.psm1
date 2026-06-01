@@ -2196,6 +2196,15 @@ function ConvertTo-NumberValue {
     # accepted regardless of whether the user typed them. Excess decimal
     # places (beyond -Precision) are rejected — silent rounding would let
     # the rendered value diverge from what the user typed.
+    #
+    # SI multipliers (case-sensitive): a trailing 'k', 'M', 'G', or 'T'
+    # multiplies the parsed value by 10^3, 10^6, 10^9, or 10^12 respectively.
+    # "1.5M" → 1500000, "2k" → 2000. When an SI suffix is present the
+    # buffer-text precision check is skipped: "1.5k" is a perfectly valid
+    # integer (1500) under -Precision 0 even though the literal text has a
+    # dot. Precision is instead enforced post-multiplication via modulo
+    # against the quantum grid, so "1.555k" (1555) passes at Precision=0
+    # but "1.5555k" (1555.5) does not.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
@@ -2211,25 +2220,64 @@ function ConvertTo-NumberValue {
     $sep = $Culture.NumberFormat.NumberGroupSeparator
     $dot = $Culture.NumberFormat.NumberDecimalSeparator
     $stripped = $Buffer.Replace($sep, '')
+
+    # Strip a trailing single SI suffix and remember the multiplier.
+    # Case-sensitive: lowercase k for kilo (matches SI convention), uppercase
+    # M/G/T for mega/giga/tera. -creplace + -cmatch don't help here because
+    # we need to BRANCH on the matched char; switch with -CaseSensitive is
+    # the readable form.
+    $multiplier = [decimal]1
+    $siApplied = $false
+    if ($stripped.Length -ge 2) {
+        $lastChar = $stripped[$stripped.Length - 1]
+        switch -CaseSensitive ([string]$lastChar) {
+            'k' { $multiplier = [decimal]1000;          $siApplied = $true }
+            'M' { $multiplier = [decimal]1000000;       $siApplied = $true }
+            'G' { $multiplier = [decimal]1000000000;    $siApplied = $true }
+            'T' { $multiplier = [decimal]1000000000000; $siApplied = $true }
+        }
+        if ($siApplied) {
+            $stripped = $stripped.Substring(0, $stripped.Length - 1)
+        }
+    }
+
     $styles = [System.Globalization.NumberStyles]::Float -bor [System.Globalization.NumberStyles]::AllowThousands
     $parsed = [decimal]0
     if (-not [decimal]::TryParse($stripped, $styles, $Culture, [ref]$parsed)) {
         return @{ Ok = $false; Value = [decimal]0; Reason = 'unparseable' }
     }
+    $final = $parsed * $multiplier
+
     $dotIdx = $stripped.IndexOf($dot)
-    if ($Precision -eq 0 -and $dotIdx -ge 0) {
-        return @{ Ok = $false; Value = $parsed; Reason = 'precision' }
-    }
-    if ($dotIdx -ge 0) {
-        $decimalsTyped = $stripped.Length - $dotIdx - $dot.Length
-        if ($decimalsTyped -gt $Precision) {
-            return @{ Ok = $false; Value = $parsed; Reason = 'precision' }
+    if ($siApplied) {
+        # SI suffix is in play — typed dot is legitimate ("1.5k" → 1500).
+        # Enforce precision against the multiplied result via modulo on
+        # the quantum grid. Precision=0 → quantum=1 → require integer.
+        $quantum = if ($Precision -eq 0) { [decimal]1 } else { [decimal][Math]::Pow(10.0, -$Precision) }
+        if (($final % $quantum) -ne 0) {
+            return @{ Ok = $false; Value = $final; Reason = 'precision' }
+        }
+    } else {
+        # No SI multiplier — preserve the original UX: any dot at
+        # Precision=0 is invalid; more decimals than Precision in the buffer
+        # text is invalid. (This gives the user immediate red-feedback the
+        # moment they type a stray '.', rather than waiting until they
+        # finish typing the fractional digits.)
+        if ($Precision -eq 0 -and $dotIdx -ge 0) {
+            return @{ Ok = $false; Value = $final; Reason = 'precision' }
+        }
+        if ($dotIdx -ge 0) {
+            $decimalsTyped = $stripped.Length - $dotIdx - $dot.Length
+            if ($decimalsTyped -gt $Precision) {
+                return @{ Ok = $false; Value = $final; Reason = 'precision' }
+            }
         }
     }
-    if ($parsed -lt $Min -or $parsed -gt $Max) {
-        return @{ Ok = $false; Value = $parsed; Reason = 'range' }
+
+    if ($final -lt $Min -or $final -gt $Max) {
+        return @{ Ok = $false; Value = $final; Reason = 'range' }
     }
-    return @{ Ok = $true; Value = $parsed; Reason = '' }
+    return @{ Ok = $true; Value = $final; Reason = '' }
 }
 
 function Get-AcceleratedStep {
@@ -2325,8 +2373,13 @@ function Read-Number {
         always accepted; '-' is accepted only at position 0 when Min < 0;
         the culture's decimal point is accepted only when Precision > 0; the
         culture's thousands separator is accepted only when -ThousandsSeparator
-        is on. Pasted content must parse to a single in-range number or it
-        is rejected wholesale (same convention as Read-ValidatedInput).
+        is on. A trailing SI multiplier ('k', 'M', 'G', or 'T' = 10^3, 10^6,
+        10^9, 10^12) is also accepted — "1.5M" means 1,500,000. Case-
+        sensitive (lowercase k for kilo, uppercase M/G/T per SI). The widget
+        re-formats the buffer to the canonical numeric form the next time the
+        value is updated by an arrow key or paste. Pasted content must parse
+        to a single in-range number or it is rejected wholesale (same
+        convention as Read-ValidatedInput).
 
         Internal arithmetic uses [decimal] end-to-end to avoid IEEE-754
         drift in display and stepping — important when Precision > 0 or
@@ -2688,6 +2741,16 @@ function Read-Number {
                         } elseif ([string]$ch -eq $sepChar) {
                             if ($ThousandsSeparator) {
                                 $accept = $true
+                            }
+                        } elseif ($ch -cin 'k','M','G','T') {
+                            # SI multiplier: only at end of buffer, only once,
+                            # only when at least one digit is already typed.
+                            # Case-sensitive (lowercase k for kilo per SI).
+                            if ($cursor -eq $buffer.Length -and ($buffer -match '\d')) {
+                                $last = if ($buffer.Length -gt 0) { $buffer[$buffer.Length - 1] } else { [char]' ' }
+                                if ($last -cnotin 'k','M','G','T') {
+                                    $accept = $true
+                                }
                             }
                         }
                         if ($accept) {

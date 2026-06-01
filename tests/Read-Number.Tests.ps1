@@ -198,6 +198,129 @@ Describe 'ConvertTo-NumberValue' {
             $r.Value | Should -Be -25
         }
     }
+
+    Context 'SI suffix (k / M / G / T)' {
+        It 'parses "1k" as 1000' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1k' -Precision 0 -Min 0 -Max 1e12 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 1000
+        }
+
+        It 'parses "1.5M" as 1,500,000' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1.5M' -Precision 0 -Min 0 -Max 1e12 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 1500000
+        }
+
+        It 'parses "0.5G" as 500,000,000' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '0.5G' -Precision 0 -Min 0 -Max 1e12 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 500000000
+        }
+
+        It 'parses "1T" as 1,000,000,000,000' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1T' -Precision 0 -Min 0 -Max 1e15 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 1000000000000
+        }
+
+        It 'parses "-1.5k" with Min < 0' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '-1.5k' -Precision 0 -Min -10000 -Max 10000 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be (-1500)
+        }
+
+        It 'allows a dot in the typed text at Precision=0 when SI multiplier makes the result integer' {
+            # "1.5k" = 1500 is integer-valued even though the buffer has a dot.
+            # The post-multiplication modulo check passes (1500 % 1 == 0).
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1.5k' -Precision 0 -Min 0 -Max 10000 -Culture $Culture
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 1500
+        }
+
+        It 'rejects when SI-multiplied result still has more decimals than Precision allows' {
+            # "1.5555k" = 1555.5 → not integer at Precision=0.
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1.5555k' -Precision 0 -Min 0 -Max 10000 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'precision'
+        }
+
+        It 'is case-sensitive: "1K" (uppercase) is NOT a valid SI suffix' {
+            # Lowercase k = kilo per SI; uppercase K would clash with Kelvin
+            # and the kibibyte convention, so we reject it.
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1K' -Precision 0 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'unparseable'
+        }
+
+        It 'rejects a bare SI suffix with no numeric part' {
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer 'M' -Precision 0 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'unparseable'
+        }
+
+        It 'rejects trailing junk after an SI suffix' {
+            # "1k2" — only the LAST char is examined for SI; "1k" stripped to
+            # "1k2"->"1k" doesn't match because the suffix has to be the last
+            # char of the buffer. Wait — actually the regex strips ONLY when
+            # the very last char is an SI char. "1k2" ends in '2', not an SI
+            # char, so no stripping. TryParse "1k2" fails → unparseable.
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1k2' -Precision 0 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'unparseable'
+        }
+
+        It 'enforces range against the multiplied value, not the typed digits' {
+            # "1.5k" = 1500, exceeds Max 1000 → range invalid.
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1.5k' -Precision 0 -Min 0 -Max 1000 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'range'
+        }
+
+        It 'preserves the plain-decimal precision UX when no SI suffix is present' {
+            # "1.5" at Precision=0 still rejects immediately on the dot —
+            # SI handling does not relax this case for plain numbers.
+            $r = InModuleScope pwshTui -Parameters @{ Culture = $script:enUS } {
+                param($Culture)
+                ConvertTo-NumberValue -Buffer '1.5' -Precision 0 -Culture $Culture
+            }
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'precision'
+        }
+    }
 }
 
 Describe 'Get-AcceleratedStep' {
