@@ -23,6 +23,7 @@ Menu_Confirmation             = Ja/Nein-Bestätigung
 Menu_ChoiceSelector           = Auswahlfeld (einfach + mehrfach)
 Menu_NumberInput              = Zahleneingabe (Einheiten, Trennzeichen, beschleunigende Pfeile)
 Menu_NumberWrappers           = Zahlen-Wrapper (Prozent, Temperatur, Währung)
+Menu_Measurement              = Maßeingabe (mehrere Einheiten via units/*.psd1)
 Menu_TemplatedWrappers        = Vorlagen-Wrapper (Telefon, E-Mail, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (Inline-Felder)
@@ -58,6 +59,7 @@ Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
 Header_Number                 = Read-Number (Einheiten, Trennzeichen, beschleunigende Pfeile)
 Header_NumberWrappers         = Read-Percentage / Read-Temperature / Read-Currency
+Header_Measurement            = Read-Measurement (Mehrere-Einheiten-Eingabe, datengesteuert)
 Header_Spinner                = Show-Spinner (Braille-Standard)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — alle sechs Stile, jeweils 1,5 s
@@ -81,6 +83,7 @@ Hint_ChoiceMulti              = Mehrfachauswahl: Leertaste schaltet um, Ziffern 
 Hint_Number1                  = Hoch/Runter zum Verstellen, halten zum Beschleunigen (Kurve skaliert mit der Spanne und bremst nahe den Grenzen ab). PgUp/PgDn springen um 10*Step.
 Hint_Number2                  = Ziffern direkt eintippen; Backspace/Entf bearbeiten den Puffer; Enter bestätigt, wenn im Bereich; Esc bricht ab.
 Hint_NumberWrappers           = Lokale-bezogene Standards: Temperatureinheit aus der Region, Währungssymbol vom ISO-Code. -Unit / -Currency überschreiben für nicht standardmäßige Formate.
+Hint_Measurement              = Tippen Sie eine Maßangabe ein wie "5'11\"", "1m 80cm" oder "100cm" — der Parser nutzt units/length.psd1 (keine festkodierte Einheitenliste). Der Dekorator zeigt den Wert in der regional bevorzugten Einheit.
 Hint_Spinner                  = Führe einen 2-Sekunden-Sleep aus...
 Hint_SpinnerTimer             = Führe einen 3,5-Sekunden-Sleep mit Live-Zeitanzeige aus...
 Hint_SpinnerStylesAscii       = ASCII-Modus ist an — -Ascii erzwingt Style=Ascii unabhängig von -Style, daher rendern alle vier als das Ascii-Glyph unten. ASCII deaktivieren, um jeden Stil wie benannt zu sehen.
@@ -122,6 +125,8 @@ Prompt_Budget                 = Budget:
 Prompt_Amount                 = Betrag:
 Prompt_BodyTemp               = Körpertemperatur:
 Prompt_Progress               = Fortschritt:
+Prompt_Distance               = Entfernung:
+Prompt_Ambient                = Umgebungstemperatur:
 
 Activity_Working              = Arbeite
 Activity_Querying             = Abfrage

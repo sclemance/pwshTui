@@ -23,6 +23,7 @@ Menu_Confirmation             = Confirmación Sí/No
 Menu_ChoiceSelector           = Selector de opciones (simple + múltiple)
 Menu_NumberInput              = Entrada numérica (unidades, separadores, flechas aceleradas)
 Menu_NumberWrappers           = Envoltorios numéricos (Porcentaje, Temperatura, Moneda)
+Menu_Measurement              = Medida (entrada multi-unidad vía units/*.psd1)
 Menu_TemplatedWrappers        = Envoltorios con plantilla (Teléfono, Correo, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (campos en línea)
@@ -58,6 +59,7 @@ Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
 Header_Number                 = Read-Number (unidades, separadores, flechas aceleradas)
 Header_NumberWrappers         = Read-Percentage / Read-Temperature / Read-Currency
+Header_Measurement            = Read-Measurement (entrada multi-unidad basada en archivos de datos)
 Header_Spinner                = Show-Spinner (Braille por defecto)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — los seis estilos, 1,5 s cada uno
@@ -81,6 +83,7 @@ Hint_ChoiceMulti              = Multi-selección: Espacio alterna, dígitos muev
 Hint_Number1                  = Arriba/Abajo para ajustar, mantener para acelerar (la curva se adapta al rango y se ralentiza cerca de los límites). RePág/AvPág saltan 10*Step.
 Hint_Number2                  = Escriba dígitos para editar directamente; Retroceso/Supr modifican el búfer; Entrar confirma si está en rango; Esc cancela.
 Hint_NumberWrappers           = Valores por defecto según la configuración regional: unidad de temperatura derivada de la región, símbolo monetario del código ISO. Use -Unit / -Currency para anular.
+Hint_Measurement              = Escriba una medida como "5'11\"", "1m 80cm" o "100cm" — el analizador se basa en units/length.psd1 (sin lista fija de unidades). El decorador muestra el valor en la unidad preferida de la región.
 Hint_Spinner                  = Ejecutando una pausa de 2 segundos...
 Hint_SpinnerTimer             = Ejecutando una pausa de 3,5 segundos con contador en vivo...
 Hint_SpinnerStylesAscii       = El modo ASCII está activado — -Ascii fuerza Style=Ascii independientemente de -Style, así que los cuatro se renderizan como el glifo Ascii. Desactive ASCII para ver cada estilo nombrado.
@@ -122,6 +125,8 @@ Prompt_Budget                 = Presupuesto:
 Prompt_Amount                 = Importe:
 Prompt_BodyTemp               = Temperatura corporal:
 Prompt_Progress               = Progreso:
+Prompt_Distance               = Distancia:
+Prompt_Ambient                = Temperatura ambiente:
 
 Activity_Working              = Trabajando
 Activity_Querying             = Consultando

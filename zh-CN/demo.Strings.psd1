@@ -23,6 +23,7 @@ Menu_Confirmation             = 是/否确认
 Menu_ChoiceSelector           = 选项选择器 (单选 + 多选)
 Menu_NumberInput              = 数值输入 (单位、千位分隔符、加速方向键)
 Menu_NumberWrappers           = 数值封装 (百分比、温度、货币)
+Menu_Measurement              = 测量 (通过 units/*.psd1 的多单位输入)
 Menu_TemplatedWrappers        = 模板封装 (电话、邮箱、IPv4、CIDR、URL)
 
 Menu_DateInline               = Read-Date (内联字段)
@@ -58,6 +59,7 @@ Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
 Header_Number                 = Read-Number (单位、千位分隔符、加速方向键)
 Header_NumberWrappers         = Read-Percentage / Read-Temperature / Read-Currency
+Header_Measurement            = Read-Measurement (数据文件驱动的多单位输入)
 Header_Spinner                = Show-Spinner (默认 Braille)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — 全部六种样式、每种 1.5 秒
@@ -81,6 +83,7 @@ Hint_ChoiceMulti              = 多选: 空格切换、数字移动焦点、Ente
 Hint_Number1                  = 上下键增减、按住可加速 (曲线随范围放大、接近上下限时减速)。PgUp/PgDn 跳 10*Step。
 Hint_Number2                  = 直接输入数字编辑；Backspace/Delete 修改缓冲；在范围内时 Enter 确认；Esc 取消。
 Hint_NumberWrappers           = 本地化默认: 温度单位按区域设置、货币符号按 ISO 代码。用 -Unit / -Currency 覆盖。
+Hint_Measurement              = 输入测量值,例如 "5'11\""、"1m 80cm" 或 "100cm" — 解析器由 units/length.psd1 驱动 (无硬编码单位列表)。装饰器以区域偏好单位显示数值。
 Hint_Spinner                  = 正在执行 2 秒休眠...
 Hint_SpinnerTimer             = 正在执行 3.5 秒休眠 (带实时耗时显示)...
 Hint_SpinnerStylesAscii       = ASCII 模式已启用 — -Ascii 强制 Style=Ascii (不论 -Style)，所以四种都以下面的 Ascii 字符渲染。关闭 ASCII 以查看每种样式。
@@ -122,6 +125,8 @@ Prompt_Budget                 = 预算:
 Prompt_Amount                 = 金额:
 Prompt_BodyTemp               = 体温:
 Prompt_Progress               = 进度:
+Prompt_Distance               = 距离:
+Prompt_Ambient                = 环境温度:
 
 Activity_Working              = 处理中
 Activity_Querying             = 查询中
