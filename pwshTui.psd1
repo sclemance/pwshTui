@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.12.0'
+    ModuleVersion        = '0.13.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,18 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.13.0
+- Get-PaginatedSelection -PreSelected: pre-check items on open in
+  -MultiSelect mode. Items are matched by identity (reference equality
+  for objects, value equality for strings — same convention as the
+  toggle behavior), so callers pass the same item references they got
+  from -Items (the "edit my current selections" flow). Items not in
+  -Items are silently dropped; if -MaxSelections is set, pre-selection
+  is capped at that limit in PreSelected order. Ignored without
+  -MultiSelect. Mirrors the existing Read-Choice -PreSelected shape but
+  takes items rather than indices, since paginated lists are usually
+  driven by object collections where positional identity is fragile.
+
 0.12.0
 - Read-Number: new -Decorator <scriptblock> per-render hook. The
   scriptblock is invoked once per render with the current parsed value

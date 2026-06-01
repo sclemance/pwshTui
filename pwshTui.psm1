@@ -802,6 +802,15 @@ function Get-PaginatedSelection {
         if higher. Attempts to toggle on an item beyond this limit are
         silently ignored; items can always be toggled off. Ignored when
         -MultiSelect is not set.
+    .PARAMETER PreSelected
+        Items to pre-check on open. Ignored unless -MultiSelect is set.
+        Identity matches the toggle behavior: reference equality for
+        objects, value equality for strings — pass the same item references
+        you got from -Items (typical "edit my current selections" flow).
+        Items not present in -Items are silently dropped. If -MaxSelections
+        is in effect, pre-selection is capped at that limit (in PreSelected
+        order); the cap is a script-side misconfig the caller can detect
+        from the returned array.
     .OUTPUTS
         Without -MultiSelect: the selected item, or $null if cancelled.
         With -MultiSelect: an array (possibly empty) of selected items in
@@ -851,6 +860,8 @@ function Get-PaginatedSelection {
 
         [int]$MaxSelections = [int]::MaxValue,
 
+        [object[]]$PreSelected,
+
         [switch]$Ascii
     )
 
@@ -884,6 +895,20 @@ function Get-PaginatedSelection {
     $effectiveMax = if ($MaxSelections -gt $itemList.Count) { $itemList.Count } else { [Math]::Max(0, $MaxSelections) }
     $effectiveMin = if ($MinSelections -gt $itemList.Count) { $itemList.Count } else { [Math]::Max(0, $MinSelections) }
     if ($effectiveMin -gt $effectiveMax) { $effectiveMin = $effectiveMax }
+
+    # Pre-select items: seed $selectedSet with any -PreSelected entries that
+    # appear in $itemList, capped at $effectiveMax. Items not in $itemList
+    # are silently dropped (same convention as Read-Choice -PreSelected for
+    # out-of-range indices). $itemSet is a lookup so a large $PreSelected
+    # against a large $itemList stays O(n+m), not O(n*m).
+    if ($MultiSelect -and $PreSelected) {
+        $itemSet = [System.Collections.Generic.HashSet[object]]::new()
+        foreach ($i in $itemList) { [void]$itemSet.Add($i) }
+        foreach ($p in $PreSelected) {
+            if ($selectedSet.Count -ge $effectiveMax) { break }
+            if ($itemSet.Contains($p)) { [void]$selectedSet.Add($p) }
+        }
+    }
 
     # When Searchable is on, input is split into two modes. Selection mode
     # (initial) is where arrows navigate and Enter/Esc/Space act; search mode

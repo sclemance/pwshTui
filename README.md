@@ -57,6 +57,7 @@ A powerful interactive selector for arrays or complex objects.
 - `-SearchAlgorithm`: Specifies the algorithm used for filtering (`Auto`, `Subsequence`, `JaroWinkler`, `Legacy`). Default: `Auto`.
 - `-MultiSelect`: (Switch) Enables multi-selection. `Space` toggles the current row; `Enter` returns an array of selected items (possibly empty) in original input order. `Esc` still returns `$null`, so callers can distinguish cancel (`$null`) from "confirmed nothing" (`@()`).
 - `-MinSelections` / `-MaxSelections`: (`-MultiSelect` only) Minimum / maximum number of items that can be confirmed. Both clamp to the item count if higher. Min defaults to 0; Max defaults to the item count.
+- `-PreSelected`: (`-MultiSelect` only) Items to pre-check on open. Match by identity (reference equality for objects, value equality for strings) — pass the same item references you got from `-Items`. Items not in `-Items` are silently dropped; capped at `-MaxSelections` if set. Use it for "edit my current selections" flows where the menu opens with the user's existing choices already checked.
 - `-Ascii`: (Switch) Swap Unicode glyphs (`←→↑↓`, box-drawing chars) for ASCII fallbacks. See [Rendering Modes](#rendering-modes).
 
 **Shortcuts:**

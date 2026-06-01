@@ -5,10 +5,12 @@
 # rendering to preview how the library degrades in restricted terminals.
 Import-Module ./pwshTui.psd1 -Force
 
-# Demo-level rendering preference. Toggled from the menu; threaded into every
-# interactive call as -Ascii:$script:demoAsciiMode via the Get-DemoUI splat.
-$script:demoAsciiMode = $false
-function Get-DemoUI { @{ Ascii = $script:demoAsciiMode } }
+# Demo-level rendering preference. Read once from the module's $script:_AsciiMode
+# (which itself was seeded from $env:PWSHTUI_ASCII at module import) so the
+# label and the actual rendering agree from the first render. The "Toggle
+# Render Mode" menu entry calls Set-DemoAsciiMode, which flips both this
+# local AND the module's global — see Set-DemoAsciiMode for why.
+$script:demoAsciiMode = [bool](& (Get-Module pwshTui) { $script:_AsciiMode })
 
 # Tracks the language the demo last switched to. Starts as $PSUICulture-derived
 # default. Changing it from the menu live-mutates the module's $script:_Strings
@@ -83,6 +85,21 @@ function Set-DemoCulture([string]$Culture) {
     }
 }
 
+function Set-DemoAsciiMode([bool]$Ascii) {
+    # Flip the module's render-mode global so every widget call — including
+    # ones that don't accept -Ascii (Read-Choice, my new Read-Number-family
+    # wrappers, the templated wrappers) — picks up the change immediately
+    # without the demo having to splat -Ascii everywhere. Same back-door
+    # pattern as Set-DemoCulture's $script:_Strings mutation: legitimate
+    # for the demo (which owns its PowerShell session) but NOT the public
+    # API library callers should use — they should set $env:PWSHTUI_ASCII
+    # before importing pwshTui, or pass -Ascii per call on widgets that
+    # accept it. We also mirror the new value into $script:demoAsciiMode
+    # so the menu label stays in sync.
+    & (Get-Module pwshTui) { param($a) $script:_AsciiMode = $a } $Ascii
+    $script:demoAsciiMode = $Ascii
+}
+
 # Initial demo-string load. Uses the current $PSUICulture so the demo starts
 # already in the host's language when a translation exists; en-US otherwise.
 try {
@@ -155,8 +172,7 @@ function Wait-ReturnKey {
 function Show-PaginatedDemo {
     Write-DemoHeader (Get-DemoString 'Header_Paginated')
     Write-Host (Get-DemoString 'Hint_Paginated') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 12 -Title (Get-DemoString 'Title_SelectSystemObject') -DisplayProperty "Name" -Wrap -Searchable @ui
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 12 -Title (Get-DemoString 'Title_SelectSystemObject') -DisplayProperty "Name" -Wrap -Searchable
     if ($r) { Write-Host (Get-DemoString 'Result_YouSelectedWithID' $r.Name $r.ID) -ForegroundColor Green }
     else    { Write-Host (Get-DemoString 'Result_SelectionCancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -164,8 +180,7 @@ function Show-PaginatedDemo {
 
 function Show-PaginatedJumpDemo {
     Write-DemoHeader (Get-DemoString 'Header_PaginatedJump')
-    $ui = Get-DemoUI
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -InitialIndex 24 -Title (Get-DemoString 'Title_JumpedToItem25') -DisplayProperty "Name" @ui
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -InitialIndex 24 -Title (Get-DemoString 'Title_JumpedToItem25') -DisplayProperty "Name"
     if ($r) { Write-Host (Get-DemoString 'Result_YouSelected' $r.Name) -ForegroundColor Green }
     else    { Write-Host (Get-DemoString 'Result_SelectionCancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -174,8 +189,9 @@ function Show-PaginatedJumpDemo {
 function Show-MultiSelectDemo {
     Write-DemoHeader (Get-DemoString 'Header_MultiSelect')
     Write-Host (Get-DemoString 'Hint_MultiSelect') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -Title (Get-DemoString 'Title_PickMultiple') -DisplayProperty "Name" -Wrap -Searchable -MultiSelect @ui
+    # Pre-check the first two items so the demo shows the seeded state.
+    $preChecked = @($systemObjects | Select-Object -First 2)
+    $r = Get-PaginatedSelection -Items $systemObjects -PageSize 10 -Title (Get-DemoString 'Title_PickMultiple') -DisplayProperty "Name" -Wrap -Searchable -MultiSelect -PreSelected $preChecked
     if ($null -eq $r) {
         Write-Host (Get-DemoString 'Result_Cancelled') -ForegroundColor Yellow
     } elseif ($r.Count -eq 0) {
@@ -189,8 +205,7 @@ function Show-MultiSelectDemo {
 
 function Show-NestedMenuDemo {
     Write-DemoHeader (Get-DemoString 'Header_NestedMenu')
-    $ui = Get-DemoUI
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_AdminPortal') @ui
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_AdminPortal')
     if ($r) { Write-Host (Get-DemoString 'Result_CapturedAction' $r) -ForegroundColor Green }
     else    { Write-Host (Get-DemoString 'Result_MenuCancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -198,8 +213,7 @@ function Show-NestedMenuDemo {
 
 function Show-NestedMenuDeepDemo {
     Write-DemoHeader (Get-DemoString 'Header_NestedMenuDeep')
-    $ui = Get-DemoUI
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_AdminPortal') -InitialPath @("System Configuration", "Power Options", 1) @ui
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_AdminPortal') -InitialPath @("System Configuration", "Power Options", 1)
     if ($r) { Write-Host (Get-DemoString 'Result_Captured' $r) -ForegroundColor Green }
     Wait-ReturnKey
 }
@@ -207,8 +221,7 @@ function Show-NestedMenuDeepDemo {
 function Show-NestedMenuBorderedDemo {
     Write-DemoHeader (Get-DemoString 'Header_NestedMenuBordered')
     Write-Host (Get-DemoString 'Hint_NestedBordered') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_BorderedMenu') -Border -MinWidth 40 -X 5 -Y 15 -AltScreen @ui
+    $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_BorderedMenu') -Border -MinWidth 40 -X 5 -Y 15 -AltScreen
     if ($r) { Write-Host (Get-DemoString 'Result_Captured' $r) -ForegroundColor Green }
     Wait-ReturnKey
 }
@@ -294,8 +307,7 @@ function Show-ChoiceDemo {
 function Show-SpinnerDemo {
     Write-DemoHeader (Get-DemoString 'Header_Spinner')
     Write-Host (Get-DemoString 'Hint_Spinner') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    Show-Spinner -Activity (Get-DemoString 'Activity_Working') -ScriptBlock { Start-Sleep -Milliseconds 2000 } @ui
+    Show-Spinner -Activity (Get-DemoString 'Activity_Working') -ScriptBlock { Start-Sleep -Milliseconds 2000 }
     Write-Host (Get-DemoString 'Result_Done') -ForegroundColor Green
     Wait-ReturnKey
 }
@@ -303,8 +315,7 @@ function Show-SpinnerDemo {
 function Show-SpinnerTimerDemo {
     Write-DemoHeader (Get-DemoString 'Header_SpinnerTimer')
     Write-Host (Get-DemoString 'Hint_SpinnerTimer') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    Show-Spinner -Activity (Get-DemoString 'Activity_Querying') -ShowTimer -ScriptBlock { Start-Sleep -Milliseconds 3500 } @ui
+    Show-Spinner -Activity (Get-DemoString 'Activity_Querying') -ShowTimer -ScriptBlock { Start-Sleep -Milliseconds 3500 }
     Write-Host (Get-DemoString 'Result_Done') -ForegroundColor Green
     Wait-ReturnKey
 }
@@ -314,9 +325,8 @@ function Show-SpinnerStylesDemo {
     if ($script:demoAsciiMode) {
         Write-Host (Get-DemoString 'Hint_SpinnerStylesAscii') -ForegroundColor DarkGray
     }
-    $ui = Get-DemoUI
     foreach ($style in 'Braille','Ascii','HalfBlocks','Dots','Circles','Pulse') {
-        Show-Spinner -Activity (Get-DemoString 'Activity_StylePrefix' $style) -Style $style -ScriptBlock { Start-Sleep -Milliseconds 1500 } @ui
+        Show-Spinner -Activity (Get-DemoString 'Activity_StylePrefix' $style) -Style $style -ScriptBlock { Start-Sleep -Milliseconds 1500 }
     }
     Write-Host (Get-DemoString 'Result_AllStylesShown') -ForegroundColor Green
     Wait-ReturnKey
@@ -326,31 +336,28 @@ function Show-SpinnerClosureDemo {
     Write-DemoHeader (Get-DemoString 'Header_SpinnerClosure')
     $magicNumber = 42
     Write-Host (Get-DemoString 'Hint_SpinnerClosure' $magicNumber) -ForegroundColor DarkGray
-    $ui = Get-DemoUI
     $result = Show-Spinner -Activity (Get-DemoString 'Activity_Computing') -ShowTimer -ScriptBlock {
         Start-Sleep -Milliseconds 1500
         $magicNumber * 2
-    } @ui
+    }
     Write-Host (Get-DemoString 'Result_ScriptblockReturned' $result) -ForegroundColor Green
     Wait-ReturnKey
 }
 
 function Show-UIBoxDemo {
     Write-DemoHeader (Get-DemoString 'Header_UIBox')
-    $ui = Get-DemoUI
     Write-TuiBox -Header (Get-DemoString 'Title_SystemStatus') -Body @(
         (Get-DemoString 'Common_BodyCPU'),
         (Get-DemoString 'Common_BodyRAM'),
         (Get-DemoString 'Common_BodyDisk')
-    ) -Footer (Get-DemoString 'Common_DemoBox') -Border @ui
+    ) -Footer (Get-DemoString 'Common_DemoBox') -Border
     Wait-ReturnKey
 }
 
 function Show-DateDemo {
     Write-DemoHeader (Get-DemoString 'Header_Date')
     Write-Host (Get-DemoString 'Hint_Date') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $d = Read-Date -Prompt (Get-DemoString 'Prompt_PickDate') @ui
+    $d = Read-Date -Prompt (Get-DemoString 'Prompt_PickDate')
     if ($d) { Write-Host (Get-DemoString 'Result_SelectedDate' $d.ToString('yyyy-MM-dd')) -ForegroundColor Green }
     else    { Write-Host (Get-DemoString 'Result_Cancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -360,11 +367,10 @@ function Show-DateCalendarDemo {
     Write-DemoHeader (Get-DemoString 'Header_DateCalendar')
     Write-Host (Get-DemoString 'Hint_DateCalendar1') -ForegroundColor DarkGray
     Write-Host (Get-DemoString 'Hint_DateCalendar2') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
     $d = Read-Date -Prompt (Get-DemoString 'Prompt_ScheduleFor') -Calendar `
         -InitialDate ((Get-Date).Date.AddDays(7)) `
         -MinDate (Get-Date).Date `
-        -MaxDate (Get-Date).Date.AddYears(1) @ui
+        -MaxDate (Get-Date).Date.AddYears(1)
     if ($d) { Write-Host (Get-DemoString 'Result_SelectedDate' $d.ToString('dddd, MMMM d, yyyy')) -ForegroundColor Green }
     else    { Write-Host (Get-DemoString 'Result_Cancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -373,8 +379,7 @@ function Show-DateCalendarDemo {
 function Show-TimeDemo {
     Write-DemoHeader (Get-DemoString 'Header_Time')
     Write-Host (Get-DemoString 'Hint_Time') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $t = Read-Time -Prompt (Get-DemoString 'Prompt_StartTime') @ui
+    $t = Read-Time -Prompt (Get-DemoString 'Prompt_StartTime')
     if ($null -ne $t) { Write-Host (Get-DemoString 'Result_SelectedTime' $t.ToString()) -ForegroundColor Green }
     else              { Write-Host (Get-DemoString 'Result_Cancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -383,9 +388,8 @@ function Show-TimeDemo {
 function Show-TimeTwelveDemo {
     Write-DemoHeader (Get-DemoString 'Header_TimeTwelve')
     Write-Host (Get-DemoString 'Hint_TimeTwelve') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
     $t = Read-Time -Prompt (Get-DemoString 'Prompt_Alarm') -TwelveHour -ShowSeconds `
-        -InitialTime ([TimeSpan]::new(14, 30, 0)) @ui
+        -InitialTime ([TimeSpan]::new(14, 30, 0))
     if ($null -ne $t) { Write-Host (Get-DemoString 'Result_SelectedTime' $t.ToString()) -ForegroundColor Green }
     else              { Write-Host (Get-DemoString 'Result_Cancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
@@ -464,8 +468,7 @@ function Show-TimezoneDemo {
     Write-DemoHeader (Get-DemoString 'Header_Timezone')
     Write-Host (Get-DemoString 'Hint_Timezone1') -ForegroundColor DarkGray
     Write-Host (Get-DemoString 'Hint_Timezone2') -ForegroundColor DarkGray
-    $ui = Get-DemoUI
-    $tz = Read-Timezone -PreferredTimezones 'UTC','America/New_York','America/Los_Angeles','Europe/London','Asia/Tokyo' @ui
+    $tz = Read-Timezone -PreferredTimezones 'UTC','America/New_York','America/Los_Angeles','Europe/London','Asia/Tokyo'
     if ($tz) {
         Write-Host (Get-DemoString 'Result_SelectedTimezone' $tz.Id) -ForegroundColor Green
         Write-Host (Get-DemoString 'Result_TimezoneDisplay' $tz.DisplayName) -ForegroundColor Green
@@ -532,8 +535,7 @@ while ($running) {
         @{ Label = (Get-DemoString 'Menu_ExitDemo'); Value = "exit" }
     )
 
-    $ui = Get-DemoUI
-    $choice = Invoke-NestedMenu -MenuTree $demoMenu -Title (Get-DemoString 'Title_Demo' $modeLabel $script:demoCulture) @ui
+    $choice = Invoke-NestedMenu -MenuTree $demoMenu -Title (Get-DemoString 'Title_Demo' $modeLabel $script:demoCulture)
     switch ($choice) {
         'paginated'         { Show-PaginatedDemo }
         'paginated_jump'    { Show-PaginatedJumpDemo }
@@ -559,7 +561,7 @@ while ($running) {
         'time'              { Show-TimeDemo }
         'time_twelve'       { Show-TimeTwelveDemo }
         'timezone'          { Show-TimezoneDemo }
-        'toggle_ascii'      { $script:demoAsciiMode = -not $script:demoAsciiMode }
+        'toggle_ascii'      { Set-DemoAsciiMode (-not $script:demoAsciiMode) }
         'lang_en'           { Set-DemoCulture 'en-US' }
         'lang_fr'           { Set-DemoCulture 'fr-FR' }
         'lang_es'           { Set-DemoCulture 'es-ES' }
