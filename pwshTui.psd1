@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.10.0'
+    ModuleVersion        = '0.12.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
     Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, date / time / timezone pickers, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Read-Percentage', 'Read-Temperature', 'Read-Currency', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,51 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.12.0
+- Read-Number: new -Decorator <scriptblock> per-render hook. The
+  scriptblock is invoked once per render with the current parsed value
+  (or last-valid value during transient invalid edits) and its returned
+  string is written between the prompt and the prefix. The framework
+  doesn't wrap or color the output — the decorator owns its own ANSI
+  escapes if it wants color. The hook is also threaded into the final
+  commit-line render so the chosen value reads back with the same
+  decoration. Used internally by Read-Percentage -Bar; available for
+  other widgets that want live, value-driven decoration (signal bars,
+  level meters, sparklines, etc.).
+- Read-Percentage: new -Bar switch renders a live progress bar between
+  the prompt and the numeric value (e.g.
+  "Coverage: [██████████░░░░░░░░░░] 50 %"). The bar updates each tick
+  as arrow keys or typing change the value. -BarWidth controls bar
+  width (default 20, range 5..80). -Ascii forces the ASCII glyph set
+  ('#'/'-') instead of Unicode ('█'/'░'); falls back to
+  $script:_AsciiMode (PWSHTUI_ASCII env var). In color mode the filled
+  portion is green, the empty portion dim gray; NoColor mode shows the
+  glyphs without ANSI.
+- New BarFill/BarEmpty glyphs in $script:_GlyphsUnicode and
+  $script:_GlyphsAscii ('█'/'░' and '#'/'-' respectively), accessible
+  to any future widget that wants to draw a horizontal bar.
+- New internal helper Format-PercentageBar: pure cell-math + glyph
+  selection; what Read-Percentage -Bar's decorator wraps. Unit-tested
+  in isolation so the bar geometry can change without re-touching the
+  widget loop.
+
+0.11.0
+- Read-Percentage / Read-Temperature / Read-Currency: thin opinionated
+  wrappers over Read-Number for the three most common numeric-input
+  shapes. Read-Percentage takes 0..100 with a ' %' suffix; -AsFraction
+  returns value/100 for callers who want a multiplier. Read-Temperature
+  defaults -Unit from the current region — Fahrenheit for the eight
+  regions that conventionally use it (US, BS, BZ, KY, PW, FM, MH, LR),
+  Celsius elsewhere — and supplies terrestrial-weather Min/Max/Default
+  per unit (callers override for HVAC / body-temp / scientific ranges).
+  Read-Currency derives the symbol, decimal places, and prefix/suffix
+  placement from the chosen ISO 4217 code via CultureInfo
+  (USD = '$1,234.56' prefix/2dp; EUR under European cultures =
+  '1.234,56 €' suffix/2dp; JPY = '¥1234' prefix/0dp; BHD = 3dp). The
+  -Currency default comes from [RegionInfo]::CurrentRegion. Captures a
+  value in one currency only — does NOT convert between currencies;
+  exchange-rate handling stays the caller's responsibility.
+
 0.10.0
 - Read-Number: bounded numeric input ([decimal]) with arrow-key
   acceleration. Optional -Prefix / -Suffix decorate the field with

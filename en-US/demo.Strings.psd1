@@ -24,6 +24,7 @@ Menu_ValidatedInput           = Validated Input (IPv4, CIDR, email)
 Menu_Confirmation             = Yes/No Confirmation
 Menu_ChoiceSelector           = Choice Selector (single + multi)
 Menu_NumberInput              = Number Input (units, separators, accelerating arrows)
+Menu_NumberWrappers           = Number Wrappers (Percentage, Temperature, Currency)
 Menu_TemplatedWrappers        = Templated Wrappers (Phone, Email, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (inline fields)
@@ -58,6 +59,7 @@ Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
 Header_Number                 = Read-Number (units, separators, accelerating arrows)
+Header_NumberWrappers         = Read-Percentage / Read-Temperature / Read-Currency
 Header_Spinner                = Show-Spinner (default Braille)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — all six styles, 1.5s each
@@ -80,6 +82,7 @@ Hint_Choice                   = Arrow keys or digit 1-N to move; Enter to confir
 Hint_ChoiceMulti              = Multi-select: Space toggles, digits move focus, Enter returns the array.
 Hint_Number1                  = Up/Down to nudge, hold to accelerate (curve scales with range and slows near limits). PgUp/PgDn jump by 10*Step.
 Hint_Number2                  = Type digits to edit directly; Backspace/Delete edit the buffer; Enter commits when in range; Esc cancels.
+Hint_NumberWrappers           = Locale-aware defaults: temperature unit derived from region, currency symbol from ISO code. Override -Unit / -Currency for non-default formats.
 Hint_Spinner                  = Running a 2-second sleep...
 Hint_SpinnerTimer             = Running a 3.5-second sleep with the live elapsed-time counter...
 Hint_SpinnerStylesAscii       = ASCII mode is on — -Ascii forces Style=Ascii regardless of -Style, so all four render as the Ascii glyph below. Toggle ASCII off to see each style as-named.
@@ -119,6 +122,8 @@ Prompt_Coverage               = Coverage:
 Prompt_Temperature            = Temperature:
 Prompt_Budget                 = Budget:
 Prompt_Amount                 = Amount:
+Prompt_BodyTemp               = Body temperature:
+Prompt_Progress               = Progress:
 
 Activity_Working              = Working
 Activity_Querying             = Querying

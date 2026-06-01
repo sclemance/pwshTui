@@ -22,6 +22,7 @@ Menu_ValidatedInput           = Saisie validée (IPv4, CIDR, courriel)
 Menu_Confirmation             = Confirmation Oui/Non
 Menu_ChoiceSelector           = Sélecteur de choix (simple + multi)
 Menu_NumberInput              = Saisie numérique (unités, séparateurs, flèches accélérées)
+Menu_NumberWrappers           = Encapsuleurs numériques (Pourcentage, Température, Devise)
 Menu_TemplatedWrappers        = Encapsuleurs (Téléphone, Courriel, IPv4, CIDR, URL)
 
 Menu_DateInline               = Read-Date (champs en ligne)
@@ -56,6 +57,7 @@ Header_ValidatedInput         = Read-ValidatedInput
 Header_Confirmation           = Read-Confirmation
 Header_Choice                 = Read-Choice
 Header_Number                 = Read-Number (unités, séparateurs, flèches accélérées)
+Header_NumberWrappers         = Read-Percentage / Read-Temperature / Read-Currency
 Header_Spinner                = Show-Spinner (Braille par défaut)
 Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — les six styles, 1,5 s chacun
@@ -78,6 +80,7 @@ Hint_Choice                   = Flèches ou chiffre 1-N pour déplacer ; Entrée
 Hint_ChoiceMulti              = Multi-sélection : Espace bascule, chiffres déplacent le focus, Entrée renvoie le tableau.
 Hint_Number1                  = Haut/Bas pour ajuster, maintenir pour accélérer (la courbe s'adapte à la plage et ralentit près des limites). PgUp/PgDn sautent de 10*Step.
 Hint_Number2                  = Tapez des chiffres pour saisir directement ; Retour arrière/Suppr modifient le tampon ; Entrée valide si dans la plage ; Échap annule.
+Hint_NumberWrappers           = Défauts selon la locale : unité de température dérivée de la région, symbole monétaire du code ISO. Remplacez -Unit / -Currency pour des formats non par défaut.
 Hint_Spinner                  = Exécution d'une pause de 2 secondes...
 Hint_SpinnerTimer             = Exécution d'une pause de 3,5 secondes avec compteur en direct...
 Hint_SpinnerStylesAscii       = Le mode ASCII est activé — -Ascii impose Style=Ascii quel que soit -Style, donc les quatre s'affichent comme le glyphe Ascii ci-dessous. Désactivez ASCII pour voir chaque style nommé.
@@ -117,6 +120,8 @@ Prompt_Coverage               = Couverture :
 Prompt_Temperature            = Température :
 Prompt_Budget                 = Budget :
 Prompt_Amount                 = Montant :
+Prompt_BodyTemp               = Température corporelle :
+Prompt_Progress               = Progression :
 
 Activity_Working              = Traitement
 Activity_Querying             = Requête

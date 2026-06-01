@@ -50,6 +50,7 @@ $script:_GlyphsUnicode = @{
     ArrowsUpDown   = '↑↓'
     ChildIndicator = '►'
     RadioOn        = '●'; RadioOff   = '○'
+    BarFill        = '█'; BarEmpty   = '░'
 }
 $script:_GlyphsAscii = @{
     BorderH        = '-'; BorderV    = '|'
@@ -60,6 +61,7 @@ $script:_GlyphsAscii = @{
     ArrowsUpDown   = '^v'
     ChildIndicator = '>'
     RadioOn        = '[x]'; RadioOff = '[ ]'
+    BarFill        = '#';  BarEmpty  = '-'
 }
 
 function Get-Glyphs([bool]$Ascii) {
@@ -2330,6 +2332,13 @@ function Read-Number {
     .PARAMETER NoColor
         Suppress color; show [OK]/[??] markers in place of green/red text.
         Defaults to $script:_NoColor (set by NO_COLOR env var at import).
+    .PARAMETER Decorator
+        Optional scriptblock called once per render with the current parsed
+        value ([decimal]). Whatever string it returns is written between
+        the prompt and the prefix — used by wrappers like Read-Percentage
+        -Bar to render a live progress bar that updates as the value
+        changes. The decorator owns its own ANSI escapes if it wants
+        color; nothing is wrapped or styled by the framework.
     .EXAMPLE
         PS> Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
     .EXAMPLE
@@ -2352,7 +2361,8 @@ function Read-Number {
         [string]$Prefix = '',
         [string]$Suffix = '',
         [switch]$ThousandsSeparator,
-        [switch]$NoColor
+        [switch]$NoColor,
+        [scriptblock]$Decorator
     )
 
     Assert-InteractiveHost 'Read-Number'
@@ -2421,6 +2431,15 @@ function Read-Number {
                 Write-Host "`r$Prompt " -NoNewline
             } else {
                 Write-Host "`r$Prompt " -NoNewline -ForegroundColor Cyan
+            }
+
+            if ($null -ne $Decorator) {
+                # Pass the current parsed value when it parses, otherwise
+                # the last known valid value — keeps the decoration stable
+                # during mid-edit transient invalid states.
+                $decoVal = if ($isValid) { $parseResult.Value } else { $lastValidValue }
+                $decoText = & $Decorator $decoVal
+                if ($decoText) { Write-Host $decoText -NoNewline }
             }
 
             if ($Prefix) { Write-Host $Prefix -NoNewline }
@@ -2613,7 +2632,12 @@ function Read-Number {
             Format-NumberValue -Value $result -Precision $Precision `
                 -ThousandsSeparator:$ThousandsSeparator -Culture $culture
         }
-        Write-Host "`r$Prompt $Prefix$finalStr$Suffix`e[K"
+        $finalDeco = ''
+        if ($null -ne $Decorator -and $null -ne $result) {
+            $finalDeco = & $Decorator $result
+            if (-not $finalDeco) { $finalDeco = '' }
+        }
+        Write-Host "`r$Prompt $finalDeco$Prefix$finalStr$Suffix`e[K"
     } finally {
         Write-Host "`e[?2004l" -NoNewline
         if ($originalCursorVisible) {
@@ -4660,4 +4684,326 @@ function Read-URL {
         -AllowEmpty:$AllowEmpty -NoColor:$NoColor
 }
 
-Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL
+# --- Number wrappers ---------------------------------------------------------
+# Thin opinionated wrappers around Read-Number for shapes that benefit from
+# locale-aware defaults. Each forwards the relevant subset of Read-Number's
+# parameters; callers who need a custom format should use Read-Number directly.
+
+# Regions that conventionally use Fahrenheit for everyday temperature.
+# (Liberia partially uses both; the rest exclusively use Fahrenheit.)
+$script:_FahrenheitRegions = @('US', 'BS', 'BZ', 'KY', 'PW', 'FM', 'MH', 'LR')
+
+# Per-unit defaults for Read-Temperature when the caller doesn't specify
+# Min/Max/Default. Cover the terrestrial weather / HVAC range; tighten or
+# loosen by passing -Min / -Max explicitly for HVAC, body-temperature, or
+# scientific use.
+$script:_TempUnitDefaults = @{
+    Celsius    = @{ Min = [decimal]-100; Max = [decimal]150; Default = [decimal]20;  Suffix = ' °C' }
+    Fahrenheit = @{ Min = [decimal]-148; Max = [decimal]302; Default = [decimal]68;  Suffix = ' °F' }
+    Kelvin     = @{ Min = [decimal]173;  Max = [decimal]423; Default = [decimal]293; Suffix = ' K'  }
+}
+
+function Get-DefaultTemperatureUnit {
+    # Internal: pick Fahrenheit for regions that conventionally use it,
+    # Celsius otherwise. Falls back to Celsius if RegionInfo lookup fails
+    # (e.g. an exotic host with no current region).
+    try {
+        $region = [System.Globalization.RegionInfo]::CurrentRegion.TwoLetterISORegionName
+    } catch {
+        return 'Celsius'
+    }
+    if ($region -in $script:_FahrenheitRegions) { 'Fahrenheit' } else { 'Celsius' }
+}
+
+function Get-CurrencyFormat {
+    # Internal: derive the display format for an ISO 4217 currency code.
+    # Returns @{ Prefix; Suffix; Digits }. Strategy: scan specific cultures
+    # for one whose RegionInfo.ISOCurrencySymbol matches the requested
+    # code, then read the symbol / decimal digits / placement from that
+    # culture's NumberFormat. The CurrencyPositivePattern enumeration is:
+    #   0 = $n   (symbol prefix, no space)
+    #   1 = n$   (symbol suffix, no space)
+    #   2 = $ n  (symbol prefix, space)
+    #   3 = n $  (symbol suffix, space)
+    # Unknown codes fall back to the code itself as a literal prefix and
+    # 2 decimal places (the most common convention globally).
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$CurrencyCode
+    )
+    $code = $CurrencyCode.ToUpperInvariant()
+    $matchedCulture = $null
+    foreach ($ci in [System.Globalization.CultureInfo]::GetCultures([System.Globalization.CultureTypes]::SpecificCultures)) {
+        try {
+            $ri = [System.Globalization.RegionInfo]::new($ci.Name)
+            if ($ri.ISOCurrencySymbol -eq $code) {
+                $matchedCulture = $ci
+                break
+            }
+        } catch { }
+    }
+    if ($null -eq $matchedCulture) {
+        return @{ Prefix = "$code "; Suffix = ''; Digits = 2 }
+    }
+    $nf = $matchedCulture.NumberFormat
+    $symbol = $nf.CurrencySymbol
+    switch ($nf.CurrencyPositivePattern) {
+        0 { return @{ Prefix = $symbol;     Suffix = '';          Digits = $nf.CurrencyDecimalDigits } }
+        1 { return @{ Prefix = '';          Suffix = $symbol;     Digits = $nf.CurrencyDecimalDigits } }
+        2 { return @{ Prefix = "$symbol ";  Suffix = '';          Digits = $nf.CurrencyDecimalDigits } }
+        3 { return @{ Prefix = '';          Suffix = " $symbol";  Digits = $nf.CurrencyDecimalDigits } }
+        default { return @{ Prefix = $symbol; Suffix = '';        Digits = $nf.CurrencyDecimalDigits } }
+    }
+}
+
+function Format-PercentageBar {
+    # Internal: render a percentage as a fixed-width progress bar string.
+    # Used by Read-Percentage -Bar; extracted as a helper so the cell math
+    # and color/glyph variants are unit-testable without going through the
+    # interactive widget. Returns a string like "[████████░░░░░░░░░░░░] "
+    # (Unicode/color) or "[####------] " (ASCII/no-color). Filled cells are
+    # round(Value/100 * Width); ratio clamps to [0, 1] so values outside
+    # 0..100 still render a sensible bar end.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][decimal]$Value,
+        [Parameter(Mandatory)][ValidateRange(1, 200)][int]$Width,
+        [switch]$Ascii,
+        [switch]$NoColor
+    )
+    $ratio = [double]$Value / 100.0
+    if ($ratio -lt 0.0) { $ratio = 0.0 }
+    if ($ratio -gt 1.0) { $ratio = 1.0 }
+    $filled = [int][Math]::Round($ratio * $Width)
+    if ($filled -lt 0)     { $filled = 0 }
+    if ($filled -gt $Width) { $filled = $Width }
+    $empty = $Width - $filled
+    $glyphs = Get-Glyphs ([bool]$Ascii)
+    $filledStr = $glyphs.BarFill * $filled
+    $emptyStr = $glyphs.BarEmpty * $empty
+    if ($NoColor) {
+        return "[$filledStr$emptyStr] "
+    }
+    # Green fill, dim gray empty; reset at the end so subsequent text
+    # (prefix / numeric value) renders in the host's default style.
+    return "[`e[92m$filledStr`e[90m$emptyStr`e[0m] "
+}
+
+function Read-Percentage {
+    <#
+    .SYNOPSIS
+        Percentage prompt (0..100) with optional fractional return and bar.
+    .DESCRIPTION
+        Thin wrapper over Read-Number rendering a ' %' suffix. The on-screen
+        range is always 0..100; that's also the default return value. Pass
+        -AsFraction to receive the value divided by 100 (useful when piping
+        into a multiplier downstream). Pass -Bar to render a live progress
+        bar between the prompt and the numeric value — bar updates each
+        time the value changes (arrow keys, typing, paste).
+    .PARAMETER Prompt
+        Label shown before the input. Default: 'Percentage:'.
+    .PARAMETER Default
+        Initial value in 0..100. Default: 0.
+    .PARAMETER Precision
+        Fractional decimal places (e.g. -Precision 1 accepts 12.5%).
+        Default: 0 (integer percentages only).
+    .PARAMETER AsFraction
+        Return value/100 (so 75 → 0.75). On-screen display is unchanged.
+    .PARAMETER Bar
+        Show a live progress bar between the prompt and the numeric value
+        (e.g. "Coverage: [██████████░░░░░░░░░░] 50 %"). The bar updates
+        every render, tracking the current value as arrow keys or typing
+        change it.
+    .PARAMETER BarWidth
+        Bar width in characters. Default: 20. Only meaningful with -Bar.
+    .PARAMETER Ascii
+        Force ASCII bar glyphs ('#'/'-') instead of Unicode ('█'/'░').
+        Defaults to $script:_AsciiMode. Only meaningful with -Bar.
+    .OUTPUTS
+        [decimal] 0..100 by default, or 0..1 with -AsFraction; $null on Escape.
+    #>
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Percentage:',
+        [decimal]$Default = 0,
+        [ValidateRange(0, 6)][int]$Precision = 0,
+        [switch]$AsFraction,
+        [switch]$Bar,
+        [ValidateRange(5, 80)][int]$BarWidth = 20,
+        [switch]$Ascii,
+        [switch]$NoColor
+    )
+    $forwarded = @{
+        Prompt    = $Prompt
+        Min       = [decimal]0
+        Max       = [decimal]100
+        Default   = $Default
+        Precision = $Precision
+        Suffix    = ' %'
+        NoColor   = $NoColor
+    }
+    if ($Bar) {
+        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+        $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+        # Resolve glyphs once up here. The decorator closure can capture
+        # variables but its function-resolution scope is the global session
+        # state (a quirk of GetNewClosure), so it would not find module-
+        # private helpers like Get-Glyphs or Format-PercentageBar. Keeping
+        # the closure body to plain operators + captured values sidesteps
+        # the whole issue.
+        #
+        # NOTE — deliberate duplication: the math below mirrors
+        # Format-PercentageBar. We accept the dup because (a) the logic is
+        # tiny (~10 lines of arithmetic and a format string), (b) the
+        # alternative is non-obvious session-state plumbing that requires
+        # its own explanation, and (c) Format-PercentageBar remains the
+        # canonical, unit-tested implementation for any direct callers.
+        # If the bar geometry, glyphs, or color scheme ever change, both
+        # spots must be updated together. The Format-PercentageBar tests
+        # will keep covering the helper; the Read-Percentage -Bar tests
+        # exercise this inlined path end-to-end.
+        $glyphs = Get-Glyphs $asciiOn
+        $fillChar = $glyphs.BarFill
+        $emptyChar = $glyphs.BarEmpty
+        $forwarded['Decorator'] = {
+            param($v)
+            $ratio = [double]$v / 100.0
+            if     ($ratio -lt 0.0) { $ratio = 0.0 }
+            elseif ($ratio -gt 1.0) { $ratio = 1.0 }
+            $filled = [int][Math]::Round($ratio * $BarWidth)
+            if     ($filled -lt 0)        { $filled = 0 }
+            elseif ($filled -gt $BarWidth) { $filled = $BarWidth }
+            $empty = $BarWidth - $filled
+            $filledStr = $fillChar * $filled
+            $emptyStr  = $emptyChar * $empty
+            if ($noColorOn) { return "[$filledStr$emptyStr] " }
+            return "[`e[92m$filledStr`e[90m$emptyStr`e[0m] "
+        }.GetNewClosure()
+    }
+    $val = Read-Number @forwarded
+    if ($null -eq $val) { return $null }
+    if ($AsFraction) {
+        return [Math]::Round($val / 100, $Precision + 2)
+    }
+    return $val
+}
+
+function Read-Temperature {
+    <#
+    .SYNOPSIS
+        Temperature prompt with locale-derived unit default.
+    .DESCRIPTION
+        Thin wrapper over Read-Number decorated with a per-unit suffix
+        (' °C', ' °F', ' K'). When -Unit is omitted, picks Fahrenheit for
+        regions that conventionally use it (US, BS, BZ, KY, PW, FM, MH, LR)
+        and Celsius otherwise. Kelvin is only selected on explicit request.
+        Per-unit defaults for -Min / -Max / -Default cover the terrestrial
+        weather / HVAC range; pass them explicitly to override (e.g. for
+        body-temperature or scientific work).
+    .PARAMETER Prompt
+        Label shown before the input. Default: 'Temperature:'.
+    .PARAMETER Unit
+        Celsius, Fahrenheit, or Kelvin. Defaults to the region's convention.
+    .PARAMETER Min
+        Minimum value (in the chosen unit). Defaults per unit.
+    .PARAMETER Max
+        Maximum value (in the chosen unit). Defaults per unit.
+    .PARAMETER Default
+        Initial value (in the chosen unit). Defaults per unit.
+    .PARAMETER Precision
+        Decimal places. Default: 0.
+    .OUTPUTS
+        [decimal] in the chosen unit, or $null on Escape.
+    #>
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Temperature:',
+        [ValidateSet('Celsius', 'Fahrenheit', 'Kelvin')]
+        [string]$Unit,
+        [decimal]$Min,
+        [decimal]$Max,
+        [decimal]$Default,
+        [ValidateRange(0, 6)][int]$Precision = 0,
+        [switch]$NoColor
+    )
+    if (-not $PSBoundParameters.ContainsKey('Unit') -or [string]::IsNullOrEmpty($Unit)) {
+        $Unit = Get-DefaultTemperatureUnit
+    }
+    $u = $script:_TempUnitDefaults[$Unit]
+    if (-not $PSBoundParameters.ContainsKey('Min'))     { $Min = $u.Min }
+    if (-not $PSBoundParameters.ContainsKey('Max'))     { $Max = $u.Max }
+    if (-not $PSBoundParameters.ContainsKey('Default')) { $Default = $u.Default }
+    Read-Number -Prompt $Prompt -Min $Min -Max $Max -Default $Default `
+        -Precision $Precision -Suffix $u.Suffix -NoColor:$NoColor
+}
+
+function Read-Currency {
+    <#
+    .SYNOPSIS
+        Currency-amount prompt with locale-derived format.
+    .DESCRIPTION
+        Thin wrapper over Read-Number that decorates the field with the
+        chosen currency's symbol in its native position ('$1,234.56' for
+        USD, '1.234,56 €' for EUR under de-DE, '¥1234' for JPY). When
+        -Currency is omitted, defaults to the current region's currency via
+        [RegionInfo]::CurrentRegion.ISOCurrencySymbol. Decimal precision
+        defaults to the currency's NumberFormat.CurrencyDecimalDigits
+        (2 for USD/EUR/GBP, 0 for JPY/KRW, 3 for BHD/KWD).
+
+        Note: this widget *captures* a value in one currency; it does NOT
+        convert between currencies. The thousands / decimal separators
+        displayed follow the user's current culture (matching their
+        keyboard expectations), not the currency's home culture — a French
+        user entering USD sees '$' but separators in the French style.
+    .PARAMETER Prompt
+        Label shown before the input. Default: 'Amount:'.
+    .PARAMETER Currency
+        ISO 4217 currency code (USD, EUR, GBP, JPY, ...). Defaults to the
+        current region's currency. Unknown codes fall back to using the
+        code itself as a literal prefix and 2 decimal places.
+    .PARAMETER Min
+        Minimum amount. Default: 0.
+    .PARAMETER Max
+        Maximum amount. Default: 999,999,999.
+    .PARAMETER Default
+        Initial amount. Default: 0.
+    .PARAMETER Precision
+        Decimal places. Defaults to the currency's natural precision.
+    .OUTPUTS
+        [decimal] amount in the chosen currency, or $null on Escape.
+    #>
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Prompt = 'Amount:',
+        [string]$Currency,
+        [decimal]$Min = 0,
+        [decimal]$Max = 999999999,
+        [decimal]$Default = 0,
+        [ValidateRange(0, 6)][int]$Precision,
+        [switch]$NoColor
+    )
+    if (-not $PSBoundParameters.ContainsKey('Currency') -or [string]::IsNullOrEmpty($Currency)) {
+        try {
+            $Currency = [System.Globalization.RegionInfo]::CurrentRegion.ISOCurrencySymbol
+        } catch {
+            $Currency = 'USD'
+        }
+    }
+    $fmt = Get-CurrencyFormat -CurrencyCode $Currency
+    if (-not $PSBoundParameters.ContainsKey('Precision')) {
+        $Precision = $fmt.Digits
+    }
+    Read-Number -Prompt $Prompt -Min $Min -Max $Max -Default $Default `
+        -Precision $Precision -Prefix $fmt.Prefix -Suffix $fmt.Suffix `
+        -ThousandsSeparator -NoColor:$NoColor
+}
+
+Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency

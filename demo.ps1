@@ -415,6 +415,29 @@ function Show-NumberDemo {
     Wait-ReturnKey
 }
 
+function Show-NumberWrappersDemo {
+    Write-DemoHeader (Get-DemoString 'Header_NumberWrappers')
+    Write-Host (Get-DemoString 'Hint_NumberWrappers') -ForegroundColor DarkGray
+
+    $pct = Read-Percentage -Prompt (Get-DemoString 'Prompt_Coverage') -Default 50
+    if ($null -ne $pct) { Write-Host (Get-DemoString 'Result_Captured' "$pct%") -ForegroundColor Green }
+
+    $bar = Read-Percentage -Prompt (Get-DemoString 'Prompt_Progress') -Default 30 -Bar
+    if ($null -ne $bar) { Write-Host (Get-DemoString 'Result_Captured' "$bar%") -ForegroundColor Green }
+
+    $temp = Read-Temperature -Prompt (Get-DemoString 'Prompt_Temperature')
+    if ($null -ne $temp) { Write-Host (Get-DemoString 'Result_Captured' $temp) -ForegroundColor Green }
+
+    $body = Read-Temperature -Prompt (Get-DemoString 'Prompt_BodyTemp') -Unit Celsius `
+        -Min 30 -Max 45 -Default 37 -Precision 1
+    if ($null -ne $body) { Write-Host (Get-DemoString 'Result_Captured' $body) -ForegroundColor Green }
+
+    $amt = Read-Currency -Prompt (Get-DemoString 'Prompt_Amount') -Default 9.99
+    if ($null -ne $amt) { Write-Host (Get-DemoString 'Result_Captured' $amt) -ForegroundColor Green }
+
+    Wait-ReturnKey
+}
+
 function Show-TemplatedWrappersDemo {
     Write-DemoHeader (Get-DemoString 'Header_TemplatedWrappers')
     Write-Host (Get-DemoString 'Hint_Templated') -ForegroundColor DarkGray
@@ -480,6 +503,7 @@ while ($running) {
             @{ Label = (Get-DemoString 'Menu_Confirmation');      Value = "confirm" }
             @{ Label = (Get-DemoString 'Menu_ChoiceSelector');    Value = "choice" }
             @{ Label = (Get-DemoString 'Menu_NumberInput');       Value = "number" }
+            @{ Label = (Get-DemoString 'Menu_NumberWrappers');    Value = "number_wrappers" }
             @{ Label = (Get-DemoString 'Menu_TemplatedWrappers'); Value = "templated" }
         )}
         @{ Label = (Get-DemoString 'Menu_Group_DateTime'); Children = @(
@@ -523,6 +547,7 @@ while ($running) {
         'confirm'           { Show-ConfirmationDemo }
         'choice'            { Show-ChoiceDemo }
         'number'            { Show-NumberDemo }
+        'number_wrappers'   { Show-NumberWrappersDemo }
         'templated'         { Show-TemplatedWrappersDemo }
         'spinner'           { Show-SpinnerDemo }
         'spinner_timer'     { Show-SpinnerTimerDemo }
