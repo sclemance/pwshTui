@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.16.0'
+    ModuleVersion        = '0.18.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
     Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, date / time / timezone pickers, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Read-Percentage', 'Read-Temperature', 'Read-Currency', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Read-Percentage', 'Read-Temperature', 'Read-Currency', 'Read-Measurement', 'Get-MeasurementFamily', 'Show-Spinner', 'Write-Spinner', 'Invoke-NestedMenu', 'Write-TuiBox', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
@@ -16,6 +16,47 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.18.0
+- Read-Temperature is now a thin shim over Read-Measurement -Family
+  Temperature. The per-unit data ($script:_TempUnitDefaults), the
+  Fahrenheit-region list ($script:_FahrenheitRegions), and
+  Get-DefaultTemperatureUnit are gone — that knowledge lives entirely
+  in units/temperature.psd1. The shim preserves the legacy contract
+  end-to-end: -Unit Celsius / Fahrenheit / Kelvin still works, default
+  unit still derives from region, returned [decimal] is still in the
+  caller's chosen unit (the engine pivots through Celsius internally
+  but converts back before returning).
+- Read-Measurement now returns the value in -OutputUnit (previously
+  returned the base value). This makes Read-Measurement behave like a
+  generalized Read-Temperature — what you display is what you receive
+  — and keeps the Read-Temperature migration source-compatible.
+- units/temperature.psd1 carries celsius / fahrenheit / kelvin with
+  their aliases (°C / °F / degC / degF / K), per-unit Suffix strings,
+  per-unit Min/Max/Default, and ImperialRegions for the region split.
+- Read-Measurement now reads an optional Suffix per Unit entry (from
+  the family file) and forwards it to Read-Number unless the caller
+  overrides -Suffix explicitly. That is how the legacy " °C" / " °F"
+  / " K" suffix display survives the migration.
+
+0.17.0
+- Read-Measurement: new mixed-unit numeric input widget. The unit set,
+  aliases, conversion ratios, and region-based output preference all
+  live in units/<family>.psd1 data files — the engine code is unaware
+  of any specific family. Drop a new .psd1 in units/, get a working
+  -Family <name> with no code change. Built on top of Read-Number's
+  new -BufferParser hook plus a live conversion decorator.
+- units/length.psd1 ships as the first family: m / cm / mm / km / in /
+  ft / yd / mi with aliases for ', ", feet, inches, etc. Compound
+  input like "12ft 3in" and "5'11\"" parse as multiple components
+  summed into the base unit (meter). Bare numbers are interpreted as
+  -InputUnit (default: -OutputUnit).
+- Get-MeasurementFamily lists bundled families (filenames in units/).
+- Closure-scope behavior matches the pattern from Read-Number -Bar:
+  module-private helpers are captured up-front via ${function:...} so
+  GetNewClosure() does not strip them.
+- Read-Measurement gracefully falls back to plain Read-Number when the
+  requested family file is missing — no warnings, no errors.
+
 0.16.0
 - Read-Number gains -BufferParser <scriptblock>: an optional hook that
   replaces the built-in numeric parsing pipeline. When set, the widget

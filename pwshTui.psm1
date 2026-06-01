@@ -4879,32 +4879,8 @@ function Read-URL {
 # Thin opinionated wrappers around Read-Number for shapes that benefit from
 # locale-aware defaults. Each forwards the relevant subset of Read-Number's
 # parameters; callers who need a custom format should use Read-Number directly.
-
-# Regions that conventionally use Fahrenheit for everyday temperature.
-# (Liberia partially uses both; the rest exclusively use Fahrenheit.)
-$script:_FahrenheitRegions = @('US', 'BS', 'BZ', 'KY', 'PW', 'FM', 'MH', 'LR')
-
-# Per-unit defaults for Read-Temperature when the caller doesn't specify
-# Min/Max/Default. Cover the terrestrial weather / HVAC range; tighten or
-# loosen by passing -Min / -Max explicitly for HVAC, body-temperature, or
-# scientific use.
-$script:_TempUnitDefaults = @{
-    Celsius    = @{ Min = [decimal]-100; Max = [decimal]150; Default = [decimal]20;  Suffix = ' °C' }
-    Fahrenheit = @{ Min = [decimal]-148; Max = [decimal]302; Default = [decimal]68;  Suffix = ' °F' }
-    Kelvin     = @{ Min = [decimal]173;  Max = [decimal]423; Default = [decimal]293; Suffix = ' K'  }
-}
-
-function Get-DefaultTemperatureUnit {
-    # Internal: pick Fahrenheit for regions that conventionally use it,
-    # Celsius otherwise. Falls back to Celsius if RegionInfo lookup fails
-    # (e.g. an exotic host with no current region).
-    try {
-        $region = [System.Globalization.RegionInfo]::CurrentRegion.TwoLetterISORegionName
-    } catch {
-        return 'Celsius'
-    }
-    if ($region -in $script:_FahrenheitRegions) { 'Fahrenheit' } else { 'Celsius' }
-}
+# Read-Temperature is now a shim over Read-Measurement -Family Temperature;
+# its per-unit data lives in units/temperature.psd1.
 
 function Get-CurrencyFormat {
     # Internal: derive the display format for an ISO 4217 currency code.
@@ -5054,13 +5030,14 @@ function Read-Temperature {
     .SYNOPSIS
         Temperature prompt with locale-derived unit default.
     .DESCRIPTION
-        Thin wrapper over Read-Number decorated with a per-unit suffix
-        (' °C', ' °F', ' K'). When -Unit is omitted, picks Fahrenheit for
-        regions that conventionally use it (US, BS, BZ, KY, PW, FM, MH, LR)
-        and Celsius otherwise. Kelvin is only selected on explicit request.
-        Per-unit defaults for -Min / -Max / -Default cover the terrestrial
-        weather / HVAC range; pass them explicitly to override (e.g. for
-        body-temperature or scientific work).
+        Thin shim over Read-Measurement -Family Temperature. When -Unit is
+        omitted, picks Fahrenheit for regions that conventionally use it
+        (US, BS, BZ, KY, PW, FM, MH, LR) and Celsius otherwise — both lists
+        live in units/temperature.psd1, not in code. Kelvin is only
+        selected on explicit request. Per-unit defaults for -Min / -Max /
+        -Default cover the terrestrial weather / HVAC range and come from
+        the same family file's UnitDefaults block; pass them explicitly to
+        override (e.g. for body-temperature or scientific work).
     .PARAMETER Prompt
         Label shown before the input. Default: 'Temperature:'.
     .PARAMETER Unit
@@ -5089,15 +5066,24 @@ function Read-Temperature {
         [ValidateRange(0, 6)][int]$Precision = 0,
         [switch]$NoColor
     )
-    if (-not $PSBoundParameters.ContainsKey('Unit') -or [string]::IsNullOrEmpty($Unit)) {
-        $Unit = Get-DefaultTemperatureUnit
+    # Family-file unit names are lowercase; the legacy -Unit values are
+    # title-case. Bridge them here so callers do not need to change.
+    $forward = @{
+        Prompt         = $Prompt
+        Family         = 'Temperature'
+        DefaultsByUnit = $true
+        ShowConversion = $false
+        Precision      = $Precision
+        NoColor        = $NoColor
     }
-    $u = $script:_TempUnitDefaults[$Unit]
-    if (-not $PSBoundParameters.ContainsKey('Min'))     { $Min = $u.Min }
-    if (-not $PSBoundParameters.ContainsKey('Max'))     { $Max = $u.Max }
-    if (-not $PSBoundParameters.ContainsKey('Default')) { $Default = $u.Default }
-    Read-Number -Prompt $Prompt -Min $Min -Max $Max -Default $Default `
-        -Precision $Precision -Suffix $u.Suffix -NoColor:$NoColor
+    if ($PSBoundParameters.ContainsKey('Unit') -and -not [string]::IsNullOrEmpty($Unit)) {
+        $forward.OutputUnit = $Unit.ToLowerInvariant()
+        $forward.InputUnit  = $Unit.ToLowerInvariant()
+    }
+    if ($PSBoundParameters.ContainsKey('Min'))     { $forward.Min = $Min }
+    if ($PSBoundParameters.ContainsKey('Max'))     { $forward.Max = $Max }
+    if ($PSBoundParameters.ContainsKey('Default')) { $forward.Default = $Default }
+    return Read-Measurement @forward
 }
 
 function Read-Currency {
@@ -5163,4 +5149,457 @@ function Read-Currency {
         -ThousandsSeparator -NoColor:$NoColor
 }
 
-Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency
+# --- Measurement engine ------------------------------------------------------
+# A generic "value-with-units" widget plus its loader. Each family file in
+# units/<name>.psd1 contains the unit set, aliases, conversion ratios (or
+# affine Scale/Offset for things like temperature), and region-based output
+# preference. The engine walks whatever the loaded family gives it — no
+# measurement family is hardcoded in the engine itself, so adding a new one
+# is a data drop, not a code change. If a family file is missing,
+# Read-Measurement degrades to plain numeric input rather than throwing.
+
+function Import-MeasurementFamily {
+    # Internal: load units/<Family>.psd1 from the module directory. Returns
+    # the parsed hashtable, or $null if the file does not exist or fails to
+    # load. Verbose-only on failure so a typo in -Family degrades to the
+    # plain numeric fallback inside Read-Measurement rather than throwing.
+    # Filename match is case-insensitive so callers can write -Family Length
+    # against units/length.psd1 cross-platform (Linux/macOS file paths are
+    # case-sensitive; matching the case-insensitive convention from .NET
+    # culture/region lookups keeps -Family ergonomic).
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param([Parameter(Mandatory)][string]$Family)
+    $dir = Join-Path $PSScriptRoot 'units'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        Write-Verbose "Measurement units directory not found at $dir; falling back to numeric-only."
+        return $null
+    }
+    $match = Get-ChildItem -LiteralPath $dir -Filter '*.psd1' -ErrorAction SilentlyContinue |
+        Where-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) -ieq $Family } |
+        Select-Object -First 1
+    if ($null -eq $match) {
+        Write-Verbose "Measurement family '$Family' not found in $dir; falling back to numeric-only."
+        return $null
+    }
+    try {
+        return Import-PowerShellDataFile -LiteralPath $match.FullName
+    } catch {
+        Write-Verbose "Measurement family '$Family' failed to load: $_; falling back."
+        return $null
+    }
+}
+
+function Get-MeasurementFamily {
+    # Enumerate available family files (filename without extension). Useful
+    # for callers building UI around the bundled families and for the test
+    # suite. Returns @() when the units/ directory is missing.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+    $dir = Join-Path $PSScriptRoot 'units'
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    Get-ChildItem -LiteralPath $dir -Filter '*.psd1' -ErrorAction SilentlyContinue |
+        ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_.Name) }
+}
+
+function ConvertTo-MeasurementBase {
+    # Internal: convert $Value (in $UnitName) to the family's base unit.
+    # ToBase convention: base_value = (input + Offset) * Scale. A bare
+    # numeric ToBase is shorthand for @{ Scale = N; Offset = 0 } — pure
+    # ratios (length, mass) collapse to multiplication, affine units
+    # (Fahrenheit, Kelvin) carry an Offset.
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory)][decimal]$Value,
+        [Parameter(Mandatory)][hashtable]$Family,
+        [Parameter(Mandatory)][string]$UnitName
+    )
+    $unit = $Family.Units | Where-Object { $_.Name -eq $UnitName } | Select-Object -First 1
+    if ($null -eq $unit) {
+        throw "Unit '$UnitName' not defined in family '$($Family.Family)'."
+    }
+    $toBase = $unit.ToBase
+    if ($toBase -is [hashtable]) {
+        return ([decimal]$Value + [decimal]$toBase.Offset) * [decimal]$toBase.Scale
+    }
+    return [decimal]$Value * [decimal]$toBase
+}
+
+function ConvertFrom-MeasurementBase {
+    # Internal: inverse of ConvertTo-MeasurementBase. For the affine form:
+    # output = (base / Scale) - Offset. For the pure-ratio form: output =
+    # base / Scale.
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory)][decimal]$BaseValue,
+        [Parameter(Mandatory)][hashtable]$Family,
+        [Parameter(Mandatory)][string]$UnitName
+    )
+    $unit = $Family.Units | Where-Object { $_.Name -eq $UnitName } | Select-Object -First 1
+    if ($null -eq $unit) {
+        throw "Unit '$UnitName' not defined in family '$($Family.Family)'."
+    }
+    $toBase = $unit.ToBase
+    if ($toBase -is [hashtable]) {
+        return ([decimal]$BaseValue / [decimal]$toBase.Scale) - [decimal]$toBase.Offset
+    }
+    return [decimal]$BaseValue / [decimal]$toBase
+}
+
+function Get-MeasurementOutputUnit {
+    # Internal: pick the default output unit for a family based on region.
+    # ImperialRegions (when present) overrides .NET's IsMetric for the listed
+    # ISO-3166 codes — matches how the original Read-Temperature classified
+    # the eight Fahrenheit-using regions independent of locale metadata.
+    # Falls back to the family Base when DefaultOutputUnit is omitted or
+    # resolves to an empty string.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][hashtable]$Family)
+    if (-not $Family.ContainsKey('DefaultOutputUnit')) { return $Family.Base }
+    $regionCode = ''
+    try { $regionCode = [System.Globalization.RegionInfo]::CurrentRegion.TwoLetterISORegionName } catch { }
+    $isImperial = $false
+    if ($Family.ContainsKey('ImperialRegions') -and $regionCode -in $Family.ImperialRegions) {
+        $isImperial = $true
+    } else {
+        try { $isImperial = -not [System.Globalization.RegionInfo]::CurrentRegion.IsMetric } catch { }
+    }
+    $picked = if ($isImperial) { $Family.DefaultOutputUnit.Imperial } else { $Family.DefaultOutputUnit.Metric }
+    if ([string]::IsNullOrEmpty($picked)) { return $Family.Base }
+    return $picked
+}
+
+function ConvertTo-MeasurementValue {
+    # Internal: parse a buffer into a base-unit [decimal] using a family's
+    # aliases. Returns @{ Ok; Value; Reason; Components }.
+    #
+    # Grammar (informal):
+    #   measurement   := (signed-number unit?)+
+    #   signed-number := [-+]? digit+ (decimalSep digit+)?
+    #   unit          := one of the family's aliases (case-sensitive, longest match wins)
+    #
+    # Bare numbers (no alias) are assigned $InputUnit if supplied, otherwise
+    # the family's Base unit. Compound input like "12ft 3in" parses as two
+    # number/unit pairs whose base contributions sum. Range is enforced by
+    # the caller against -Min/-Max; this parser only flags 'empty',
+    # 'unparseable', or 'unknown-unit'.
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Buffer,
+        [Parameter(Mandatory)][hashtable]$Family,
+        [string]$InputUnit,
+        [System.Globalization.CultureInfo]$Culture = ([System.Globalization.CultureInfo]::CurrentCulture)
+    )
+    if ([string]::IsNullOrWhiteSpace($Buffer)) {
+        return @{ Ok = $false; Value = [decimal]0; Reason = 'empty'; Components = @() }
+    }
+
+    # Alias -> unit lookup, sorted longest-first so "feet" wins over "ft"
+    # and multi-char aliases beat single-char overlaps.
+    $aliasMap = [ordered]@{}
+    foreach ($u in $Family.Units) {
+        $allAliases = @($u.Name) + @($u.Aliases)
+        foreach ($a in $allAliases) {
+            if (-not [string]::IsNullOrEmpty($a)) { $aliasMap[$a] = $u.Name }
+        }
+    }
+    $aliasesByLength = @($aliasMap.Keys | Sort-Object { $_.Length } -Descending)
+
+    $fallbackUnit = if ($InputUnit) { $InputUnit } else { $Family.Base }
+    $dotChar = $Culture.NumberFormat.NumberDecimalSeparator
+
+    $pos = 0
+    $components = @()
+    while ($pos -lt $Buffer.Length) {
+        while ($pos -lt $Buffer.Length -and [char]::IsWhiteSpace($Buffer[$pos])) { $pos++ }
+        if ($pos -ge $Buffer.Length) { break }
+
+        $numStart = $pos
+        if ($Buffer[$pos] -eq '-' -or $Buffer[$pos] -eq '+') { $pos++ }
+        $sawDigit = $false
+        while ($pos -lt $Buffer.Length -and [char]::IsDigit($Buffer[$pos])) { $pos++; $sawDigit = $true }
+        if ($pos -lt $Buffer.Length -and ([string]$Buffer[$pos]) -eq $dotChar) {
+            $pos++
+            while ($pos -lt $Buffer.Length -and [char]::IsDigit($Buffer[$pos])) { $pos++; $sawDigit = $true }
+        }
+        if (-not $sawDigit) {
+            return @{ Ok = $false; Value = [decimal]0; Reason = 'unparseable'; Components = $components }
+        }
+        $numText = $Buffer.Substring($numStart, $pos - $numStart)
+        $parsedNum = [decimal]0
+        if (-not [decimal]::TryParse($numText, [System.Globalization.NumberStyles]::Float, $Culture, [ref]$parsedNum)) {
+            return @{ Ok = $false; Value = [decimal]0; Reason = 'unparseable'; Components = $components }
+        }
+
+        # Optional whitespace, then optional unit alias.
+        while ($pos -lt $Buffer.Length -and [char]::IsWhiteSpace($Buffer[$pos])) { $pos++ }
+        $matchedAlias = $null
+        if ($pos -lt $Buffer.Length) {
+            foreach ($a in $aliasesByLength) {
+                if ($Buffer.Length - $pos -ge $a.Length -and
+                    $Buffer.Substring($pos, $a.Length) -ceq $a) {
+                    $matchedAlias = $a
+                    $pos += $a.Length
+                    break
+                }
+            }
+            if ($null -eq $matchedAlias) {
+                return @{ Ok = $false; Value = [decimal]0; Reason = 'unknown-unit'; Components = $components }
+            }
+        }
+        $unitName = if ($matchedAlias) { $aliasMap[$matchedAlias] } else { $fallbackUnit }
+        $components += @{ Number = $parsedNum; Unit = $unitName }
+    }
+
+    if ($components.Count -eq 0) {
+        return @{ Ok = $false; Value = [decimal]0; Reason = 'empty'; Components = @() }
+    }
+
+    $baseSum = [decimal]0
+    foreach ($c in $components) {
+        $baseSum += ConvertTo-MeasurementBase -Value $c.Number -Family $Family -UnitName $c.Unit
+    }
+    return @{ Ok = $true; Value = $baseSum; Reason = ''; Components = $components }
+}
+
+function Read-Measurement {
+    <#
+    .SYNOPSIS
+        Mixed-unit measurement input driven by data files in units/.
+    .DESCRIPTION
+        Generic numeric-with-units widget. The -Family parameter names a
+        units/<family>.psd1 data file (Length, Temperature, Mass, ...);
+        the engine knows nothing about specific units, only how to walk
+        whatever the loaded family provides. Input like "12ft 3in",
+        "5'11\"", or "100cm" is parsed via the family's aliases (longest
+        match wins, case-sensitive); compound terms sum in the family's
+        base unit; bare numbers fall back to -InputUnit (which itself
+        defaults to -OutputUnit).
+        When -ShowConversion is on, a live decorator shows the value
+        converted into -OutputUnit between the prompt and the field. If
+        the requested family file is missing, the widget silently degrades
+        to plain Read-Number behavior.
+    .PARAMETER Prompt
+        Label shown before the input field.
+    .PARAMETER Family
+        Family name. Resolves to units/<Family>.psd1 in the module dir.
+    .PARAMETER Min
+        Lower bound (inclusive), expressed in -OutputUnit. When omitted and
+        -DefaultsByUnit is set with a matching UnitDefaults entry, uses the
+        family's per-unit Min.
+    .PARAMETER Max
+        Upper bound (inclusive), expressed in -OutputUnit. Same fallback
+        chain as -Min.
+    .PARAMETER Default
+        Initial value, expressed in -OutputUnit.
+    .PARAMETER OutputUnit
+        Unit used for display, the conversion decorator, and -Min/-Max
+        interpretation. Defaults to the family's region-derived choice
+        via Get-MeasurementOutputUnit.
+    .PARAMETER InputUnit
+        Unit assumed for bare numbers (without an alias). Defaults to
+        -OutputUnit, matching the "I'm typing in the unit I see" model.
+    .PARAMETER DefaultsByUnit
+        Pull Min / Max / Default from the family's UnitDefaults[OutputUnit]
+        block instead of requiring them as arguments. Explicit -Min / -Max
+        / -Default still win for partial overrides.
+    .PARAMETER ShowConversion
+        Render a live [~ value OutputUnit] decoration between the prompt
+        and the input. On by default; pass -ShowConversion:$false to hide.
+    .PARAMETER Precision
+        Decimal places passed through to Read-Number. Defaults to 0.
+    .PARAMETER Prefix
+        Literal prefix forwarded to Read-Number.
+    .PARAMETER Suffix
+        Literal suffix forwarded to Read-Number.
+    .PARAMETER NoColor
+        Suppress color; forwarded to Read-Number.
+    .PARAMETER Bar
+        Render a live progress bar tracking the value between Min and Max
+        (in base units). Forwarded to Read-Number.
+    .PARAMETER BarWidth
+        Bar width in characters. Forwarded to Read-Number.
+    .PARAMETER Ascii
+        Force ASCII glyphs for the bar and the conversion decorator.
+    .EXAMPLE
+        PS> Read-Measurement -Prompt 'Distance:' -Family Length -DefaultsByUnit
+    .EXAMPLE
+        PS> Read-Measurement -Prompt 'Height:' -Family Length `
+                             -OutputUnit foot -Min 0 -Max 8 -Default 5.5
+    .OUTPUTS
+        [decimal] value expressed in -OutputUnit (so a caller asking for
+        -OutputUnit foot gets feet back; asking for celsius gets celsius
+        back). Internally the engine pivots through the family's base
+        unit, but that's an implementation detail. Returns $null on Escape.
+    #>
+    [CmdletBinding()]
+    [OutputType([decimal])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Prompt,
+        [Parameter(Mandatory)][string]$Family,
+        [decimal]$Min,
+        [decimal]$Max,
+        [decimal]$Default,
+        [string]$OutputUnit,
+        [string]$InputUnit,
+        [switch]$DefaultsByUnit,
+        [switch]$ShowConversion = $true,
+        [ValidateRange(0, 6)][int]$Precision = 0,
+        [string]$Prefix = '',
+        [string]$Suffix = '',
+        [switch]$NoColor,
+        [switch]$Bar,
+        [ValidateRange(5, 80)][int]$BarWidth = 20,
+        [switch]$Ascii
+    )
+
+    $fam = Import-MeasurementFamily -Family $Family
+
+    if ($null -eq $fam) {
+        # Graceful fallback: family file missing or unparseable. Forward only
+        # the numeric pass-throughs to Read-Number. -Min/-Max are required
+        # by Read-Number, so if the caller didn't supply them in this branch
+        # the error will surface there with the original Read-Number message.
+        $forward = @{
+            Prompt    = $Prompt
+            Precision = $Precision
+            Prefix    = $Prefix
+            Suffix    = $Suffix
+            NoColor   = $NoColor
+            Bar       = $Bar
+            BarWidth  = $BarWidth
+            Ascii     = $Ascii
+        }
+        if ($PSBoundParameters.ContainsKey('Min'))     { $forward.Min = $Min }
+        if ($PSBoundParameters.ContainsKey('Max'))     { $forward.Max = $Max }
+        if ($PSBoundParameters.ContainsKey('Default')) { $forward.Default = $Default }
+        return Read-Number @forward
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('OutputUnit') -or [string]::IsNullOrEmpty($OutputUnit)) {
+        $OutputUnit = Get-MeasurementOutputUnit -Family $fam
+    }
+    if (-not $PSBoundParameters.ContainsKey('InputUnit') -or [string]::IsNullOrEmpty($InputUnit)) {
+        $InputUnit = $OutputUnit
+    }
+
+    # Resolve Min/Max/Default. Order: explicit caller arg > family's
+    # UnitDefaults[OutputUnit] (when -DefaultsByUnit) > error / fallback.
+    $unitDefaults = $null
+    if ($DefaultsByUnit -and $fam.ContainsKey('UnitDefaults') -and $fam.UnitDefaults.ContainsKey($OutputUnit)) {
+        $unitDefaults = $fam.UnitDefaults[$OutputUnit]
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('Min')) {
+        if ($null -ne $unitDefaults -and $unitDefaults.ContainsKey('Min')) {
+            $Min = [decimal]$unitDefaults.Min
+        } else {
+            throw "Read-Measurement: -Min is required when -DefaultsByUnit is not set or family '$Family' has no UnitDefaults entry for '$OutputUnit'."
+        }
+    }
+    if (-not $PSBoundParameters.ContainsKey('Max')) {
+        if ($null -ne $unitDefaults -and $unitDefaults.ContainsKey('Max')) {
+            $Max = [decimal]$unitDefaults.Max
+        } else {
+            throw "Read-Measurement: -Max is required when -DefaultsByUnit is not set or family '$Family' has no UnitDefaults entry for '$OutputUnit'."
+        }
+    }
+    if (-not $PSBoundParameters.ContainsKey('Default')) {
+        if ($null -ne $unitDefaults -and $unitDefaults.ContainsKey('Default')) {
+            $Default = [decimal]$unitDefaults.Default
+        } else {
+            $Default = $Min
+        }
+    }
+
+    # -Min/-Max/-Default are in OutputUnit; Read-Number works in base units.
+    $baseMin     = ConvertTo-MeasurementBase -Value $Min     -Family $fam -UnitName $OutputUnit
+    $baseMax     = ConvertTo-MeasurementBase -Value $Max     -Family $fam -UnitName $OutputUnit
+    $baseDefault = ConvertTo-MeasurementBase -Value $Default -Family $fam -UnitName $OutputUnit
+    if ($baseMin -gt $baseMax) {
+        # Affine conversions can flip ordering (e.g. negative Scale would,
+        # though no shipped family uses one). Swap so Read-Number doesn't
+        # reject the range. With all current families this branch is dead.
+        $tmp = $baseMin; $baseMin = $baseMax; $baseMax = $tmp
+    }
+
+    # Suffix resolution: a caller-supplied -Suffix always wins. Otherwise
+    # fall back to the OutputUnit entry's Suffix property (e.g. temperature
+    # units carry ' °C', ' °F', ' K'). This is what preserves the legacy
+    # Read-Temperature display when the shim forwards through here.
+    if (-not $PSBoundParameters.ContainsKey('Suffix') -or [string]::IsNullOrEmpty($Suffix)) {
+        $unitEntry = $fam.Units | Where-Object { $_.Name -eq $OutputUnit } | Select-Object -First 1
+        if ($null -ne $unitEntry -and $unitEntry.ContainsKey('Suffix')) {
+            $Suffix = [string]$unitEntry.Suffix
+        }
+    }
+
+    $culture = [System.Globalization.CultureInfo]::CurrentCulture
+
+    # Closure scope (same gotcha as Read-Number -Bar's decorator and
+    # Read-Percentage -Bar's pass-through): GetNewClosure() strips module
+    # session state, so module-private functions cannot be called by name
+    # from inside the closure body. Capture the function bodies up-front
+    # via ${function:...} and dispatch with &.
+    $parserFn   = ${function:ConvertTo-MeasurementValue}
+    $toBaseFn   = ${function:ConvertTo-MeasurementBase}
+    $fromBaseFn = ${function:ConvertFrom-MeasurementBase}
+
+    $famLocal       = $fam
+    $inputUnitLocal = $InputUnit
+    $outputLocal    = $OutputUnit
+    $minLocal       = $baseMin
+    $maxLocal       = $baseMax
+    $cultureLocal   = $culture
+
+    $bufferParser = {
+        param($buf)
+        $r = & $parserFn -Buffer $buf -Family $famLocal -InputUnit $inputUnitLocal -Culture $cultureLocal
+        if ($r.Ok) {
+            if ($r.Value -lt $minLocal -or $r.Value -gt $maxLocal) {
+                return @{ Ok = $false; Value = $r.Value; Reason = 'range' }
+            }
+        }
+        return $r
+    }.GetNewClosure()
+
+    $forward = @{
+        Prompt       = $Prompt
+        Min          = $baseMin
+        Max          = $baseMax
+        Default      = $baseDefault
+        Precision    = $Precision
+        Prefix       = $Prefix
+        Suffix       = $Suffix
+        NoColor      = $NoColor
+        Bar          = $Bar
+        BarWidth     = $BarWidth
+        Ascii        = $Ascii
+        BufferParser = $bufferParser
+    }
+
+    if ($ShowConversion) {
+        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+        $asciiLocal = $asciiOn
+        $decorator = {
+            param($v)
+            $converted = & $fromBaseFn -BaseValue ([decimal]$v) -Family $famLocal -UnitName $outputLocal
+            $glyph = if ($asciiLocal) { '~' } else { [char]0x2248 }
+            return ("[{0} {1:N2} {2}] " -f $glyph, $converted, $outputLocal)
+        }.GetNewClosure()
+        if (-not $Bar) {
+            $forward.Decorator = $decorator
+        }
+    }
+
+    $baseResult = Read-Number @forward
+    if ($null -eq $baseResult) { return $null }
+    return ConvertFrom-MeasurementBase -BaseValue ([decimal]$baseResult) -Family $fam -UnitName $OutputUnit
+}
+
+Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily

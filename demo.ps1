@@ -444,6 +444,29 @@ function Show-NumberWrappersDemo {
     Wait-ReturnKey
 }
 
+function Show-MeasurementDemo {
+    Write-DemoHeader (Get-DemoString 'Header_Measurement')
+    Write-Host (Get-DemoString 'Hint_Measurement') -ForegroundColor DarkGray
+
+    # Length: mixed-unit input. Type "5'11\"", "1m 80cm", or "100cm";
+    # the live decorator shows the value converted into the region's
+    # preferred unit (m or ft). -DefaultsByUnit pulls Min/Max/Default
+    # from units/length.psd1's UnitDefaults block.
+    $len = Read-Measurement -Prompt (Get-DemoString 'Prompt_Distance') `
+        -Family Length -DefaultsByUnit
+    if ($null -ne $len) { Write-Host (Get-DemoString 'Result_Captured' $len) -ForegroundColor Green }
+
+    # Temperature: same engine, different family file. Type "72°F",
+    # "20°C", or any plain number with no suffix (interpreted as the
+    # region default). The decorator echoes the value in the chosen
+    # output unit so the user can sanity-check the parse.
+    $temp = Read-Measurement -Prompt (Get-DemoString 'Prompt_Ambient') `
+        -Family Temperature -DefaultsByUnit
+    if ($null -ne $temp) { Write-Host (Get-DemoString 'Result_Captured' $temp) -ForegroundColor Green }
+
+    Wait-ReturnKey
+}
+
 function Show-TemplatedWrappersDemo {
     Write-DemoHeader (Get-DemoString 'Header_TemplatedWrappers')
     Write-Host (Get-DemoString 'Hint_Templated') -ForegroundColor DarkGray
@@ -509,6 +532,7 @@ while ($running) {
             @{ Label = (Get-DemoString 'Menu_ChoiceSelector');    Value = "choice" }
             @{ Label = (Get-DemoString 'Menu_NumberInput');       Value = "number" }
             @{ Label = (Get-DemoString 'Menu_NumberWrappers');    Value = "number_wrappers" }
+            @{ Label = (Get-DemoString 'Menu_Measurement');       Value = "measurement" }
             @{ Label = (Get-DemoString 'Menu_TemplatedWrappers'); Value = "templated" }
         )}
         @{ Label = (Get-DemoString 'Menu_Group_DateTime'); Children = @(
@@ -552,6 +576,7 @@ while ($running) {
         'choice'            { Show-ChoiceDemo }
         'number'            { Show-NumberDemo }
         'number_wrappers'   { Show-NumberWrappersDemo }
+        'measurement'       { Show-MeasurementDemo }
         'templated'         { Show-TemplatedWrappersDemo }
         'spinner'           { Show-SpinnerDemo }
         'spinner_timer'     { Show-SpinnerTimerDemo }

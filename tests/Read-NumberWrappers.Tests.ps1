@@ -50,33 +50,31 @@ Describe 'Get-CurrencyFormat' {
     }
 }
 
-Describe '_FahrenheitRegions list' {
-    It 'includes the United States' {
-        InModuleScope pwshTui { $script:_FahrenheitRegions } | Should -Contain 'US'
+Describe 'Temperature family file (replaces the old $script:_FahrenheitRegions / Get-DefaultTemperatureUnit data)' {
+    BeforeAll {
+        $script:tempFam = InModuleScope pwshTui { Import-MeasurementFamily -Family Temperature }
     }
 
-    It 'includes Liberia' {
-        InModuleScope pwshTui { $script:_FahrenheitRegions } | Should -Contain 'LR'
+    It 'lists US in ImperialRegions' {
+        $script:tempFam.ImperialRegions | Should -Contain 'US'
     }
 
-    It 'does not include Canada' {
-        InModuleScope pwshTui { $script:_FahrenheitRegions } | Should -Not -Contain 'CA'
+    It 'lists Liberia in ImperialRegions' {
+        $script:tempFam.ImperialRegions | Should -Contain 'LR'
     }
 
-    It 'does not include the United Kingdom' {
-        InModuleScope pwshTui { $script:_FahrenheitRegions } | Should -Not -Contain 'GB'
-    }
-}
-
-Describe 'Get-DefaultTemperatureUnit' {
-    It 'returns one of the three valid units' {
-        $u = InModuleScope pwshTui { Get-DefaultTemperatureUnit }
-        $u | Should -BeIn @('Celsius', 'Fahrenheit', 'Kelvin')
+    It 'does not list Canada' {
+        $script:tempFam.ImperialRegions | Should -Not -Contain 'CA'
     }
 
-    It 'never returns Kelvin (Kelvin is opt-in only)' {
-        $u = InModuleScope pwshTui { Get-DefaultTemperatureUnit }
-        $u | Should -Not -Be 'Kelvin'
+    It 'does not list the United Kingdom' {
+        $script:tempFam.ImperialRegions | Should -Not -Contain 'GB'
+    }
+
+    It 'maps Metric default to celsius and Imperial default to fahrenheit' {
+        # Kelvin stays opt-in: it is never picked by Get-MeasurementOutputUnit.
+        $script:tempFam.DefaultOutputUnit.Metric   | Should -Be 'celsius'
+        $script:tempFam.DefaultOutputUnit.Imperial | Should -Be 'fahrenheit'
     }
 }
 
@@ -246,9 +244,16 @@ Describe 'Read-Percentage -Bar (pass-through to Read-Number)' {
     }
 }
 
-Describe 'Read-Temperature' {
-    Context 'Per-unit defaults' {
-        It 'forwards Celsius defaults and " °C" suffix' {
+Describe 'Read-Temperature (migrated onto Read-Measurement)' {
+    # Read-Temperature is now a shim over Read-Measurement -Family Temperature.
+    # The chain is Read-Temperature → Read-Measurement → Read-Number; mocking
+    # Read-Number at the bottom of the chain still pins down what hits the
+    # screen. Bounds and defaults are converted from the legacy unit-specific
+    # values into the family's base (Celsius), so the parameters passed to
+    # Read-Number are *Celsius equivalents* of the original ranges.
+
+    Context 'Per-unit defaults (final Read-Number call)' {
+        It 'Celsius: Min=-100, Max=150, Default=20, Suffix=" °C"' {
             InModuleScope pwshTui {
                 Mock Read-Number { return [decimal]20 }
                 Read-Temperature -Unit Celsius | Out-Null
@@ -258,23 +263,53 @@ Describe 'Read-Temperature' {
             }
         }
 
-        It 'forwards Fahrenheit defaults and " °F" suffix' {
+        It 'Fahrenheit: bounds converted to base celsius, Suffix=" °F"' {
             InModuleScope pwshTui {
-                Mock Read-Number { return [decimal]68 }
+                Mock Read-Number { return [decimal]20 }
                 Read-Temperature -Unit Fahrenheit | Out-Null
+                # (-148, 302, 68) °F → (-100, 150, 20) °C, modulo the
+                # 0.55555556 rounding in the family file.
                 Should -Invoke Read-Number -Times 1 -ParameterFilter {
-                    $Suffix -eq ' °F' -and $Min -eq -148 -and $Max -eq 302 -and $Default -eq 68
+                    $Suffix -eq ' °F' -and
+                    [Math]::Abs([double]($Min - (-100))) -lt 1e-5 -and
+                    [Math]::Abs([double]($Max - 150))    -lt 1e-5 -and
+                    [Math]::Abs([double]($Default - 20)) -lt 1e-5
                 }
             }
         }
 
-        It 'forwards Kelvin defaults and " K" suffix (no degree sign)' {
+        It 'Kelvin: bounds converted to base celsius (exact, no rounding), Suffix=" K"' {
             InModuleScope pwshTui {
-                Mock Read-Number { return [decimal]293 }
+                Mock Read-Number { return [decimal]19.85 }
                 Read-Temperature -Unit Kelvin | Out-Null
+                # 173 K → -100.15 °C; 423 K → 149.85 °C; 293 K → 19.85 °C.
+                # The conversion is integer-exact because Scale=1, Offset=-273.15.
                 Should -Invoke Read-Number -Times 1 -ParameterFilter {
-                    $Suffix -eq ' K' -and $Min -eq 173 -and $Max -eq 423 -and $Default -eq 293
+                    $Suffix -eq ' K' -and
+                    $Min -eq ([decimal]-100.15) -and
+                    $Max -eq ([decimal]149.85)  -and
+                    $Default -eq ([decimal]19.85)
                 }
+            }
+        }
+    }
+
+    Context 'Return value (preserves legacy Read-Temperature unit contract)' {
+        It 'returns the value in -Unit (Fahrenheit in → Fahrenheit out)' {
+            InModuleScope pwshTui {
+                # Mock Read-Number to return a base celsius value; the
+                # measurement engine converts back to the requested unit.
+                Mock Read-Number { return [decimal]20 }  # 20 °C = 68 °F
+                $r = Read-Temperature -Unit Fahrenheit
+                [Math]::Abs([double]($r - 68)) | Should -BeLessThan 1e-5
+            }
+        }
+
+        It 'returns Kelvin when -Unit Kelvin (0 °C round-trips to 273.15 K)' {
+            InModuleScope pwshTui {
+                Mock Read-Number { return [decimal]0 }
+                $r = Read-Temperature -Unit Kelvin
+                $r | Should -Be ([decimal]273.15)
             }
         }
     }
@@ -301,13 +336,16 @@ Describe 'Read-Temperature' {
         }
     }
 
-    Context 'Default unit selection' {
-        It 'uses the region-derived default when -Unit is omitted' {
+    Context 'Default unit selection (forwarding to Read-Measurement)' {
+        It 'omits -OutputUnit when -Unit is not supplied, letting Read-Measurement pick by region' {
             InModuleScope pwshTui {
-                Mock Get-DefaultTemperatureUnit { 'Fahrenheit' }
-                Mock Read-Number { return [decimal]68 }
+                Mock Read-Measurement { return [decimal]20 }
                 Read-Temperature | Out-Null
-                Should -Invoke Read-Number -Times 1 -ParameterFilter { $Suffix -eq ' °F' }
+                Should -Invoke Read-Measurement -Times 1 -ParameterFilter {
+                    $Family -eq 'Temperature' -and
+                    $DefaultsByUnit.IsPresent -and
+                    [string]::IsNullOrEmpty($OutputUnit)
+                }
             }
         }
     }

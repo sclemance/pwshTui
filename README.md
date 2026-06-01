@@ -24,6 +24,7 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Read-Percentage`](#numeric-input-wrappers) - Percentage prompt (0..100) with optional `-Bar` for live progress visualization, wraps `Read-Number`
 - [`Read-Temperature`](#numeric-input-wrappers) - Temperature prompt with locale-derived unit default (°C / °F / K), wraps `Read-Number`
 - [`Read-Currency`](#numeric-input-wrappers) - Currency-amount prompt with locale-derived symbol and precision (ISO 4217), wraps `Read-Number`
+- [`Read-Measurement`](#read-measurement) - Mixed-unit measurement input driven by `units/<family>.psd1` data files (length, etc.), with live conversion display, built on `Read-Number -BufferParser`
 - [`Invoke-NestedMenu`](#invoke-nestedmenu) - Hierarchical menu for non-paginated, deep-tree navigation
 - [`Write-TuiBox`](#write-tuibox) - The underlying layout engine, also available for standalone use
 - [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
@@ -497,7 +498,7 @@ Thin opinionated wrappers around [`Read-Number`](#read-number) for the three mos
 | Wrapper | Bounds / format | Locale-derived defaults | Wrapper-specific switches |
 |---|---|---|---|
 | `Read-Percentage` | `0`..`100`, ` %` suffix | — | `-AsFraction` (returns `value/100`); `-Bar` / `-BarWidth` / `-Ascii` are pass-throughs to [`Read-Number`](#read-number)'s bar |
-| `Read-Temperature` | Per-unit terrestrial-weather bounds | `-Unit` from `[RegionInfo]::CurrentRegion`: **Fahrenheit** for US, BS, BZ, KY, PW, FM, MH, LR; **Celsius** elsewhere. Kelvin is opt-in only. | `-Unit Celsius`/`Fahrenheit`/`Kelvin` — per-unit `-Min`/`-Max`/`-Default` can each be overridden independently |
+| `Read-Temperature` | Per-unit terrestrial-weather bounds from `units/temperature.psd1` | `-Unit` from `[RegionInfo]::CurrentRegion`: **Fahrenheit** for US, BS, BZ, KY, PW, FM, MH, LR; **Celsius** elsewhere. Kelvin is opt-in only. | `-Unit Celsius`/`Fahrenheit`/`Kelvin` — per-unit `-Min`/`-Max`/`-Default` can each be overridden independently. Now a thin shim over [`Read-Measurement`](#read-measurement); the per-unit data lives in the family file, not in code. |
 | `Read-Currency` | `0`..`999,999,999` default | `-Currency` from `[RegionInfo]::CurrentRegion.ISOCurrencySymbol`. Symbol, decimal places, and prefix/suffix placement derived from the currency's `CultureInfo.NumberFormat` (USD → `$1,234.56`/2dp, EUR under European cultures → `1.234,56 €`/2dp, JPY → `¥1234`/0dp, BHD → 3dp). Unknown ISO codes fall back to literal-prefix + 2dp. | `-Currency <ISO 4217>` — always passes `-ThousandsSeparator`. Captures only; does **not** convert between currencies |
 
 All three accept `-Prompt`, `-Default`, `-Precision`, and `-NoColor` and forward them to `Read-Number`. Each returns a `[decimal]` (or `$null` on cancel) — `Read-Percentage -AsFraction` returns the value divided by 100 (so `75` → `0.75`).
@@ -523,6 +524,81 @@ $price = Read-Currency -Prompt 'Price:' -Default 9.99
 # Explicit currency (Japanese yen — no decimals, ¥ prefix)
 $jpyPrice = Read-Currency -Prompt 'Price:' -Currency JPY
 ```
+
+---
+
+### `Read-Measurement`
+A mixed-unit numeric input widget. Reads values like `12ft 3in`, `5'11"`, `12.5ft`, or `100cm`, parses them into the family's base unit, and shows a live conversion into the user's preferred unit. The widget itself is unit-agnostic — all measurement knowledge lives in `units/<family>.psd1` data files.
+
+**Architecture — engine + data:**
+- The widget, parser, and conversion functions know nothing about feet, meters, or kilograms. They walk whatever the loaded family file gives them.
+- Each `units/<family>.psd1` is the single source of truth for that family. Adding a new family means dropping a `.psd1` file — no code change.
+- Aliases (`ft`, `in`, `'`, `"`, `°C`, `°F`, …) are recognized *only* because they appear in the loaded family's `Aliases` lists. There is no hardcoded token list.
+- `Affine` conversions (e.g. Fahrenheit ↔ Celsius) are first-class via `ToBase = @{ Scale = …; Offset = … }`; pure-ratio conversions (length, mass) use a bare `[decimal]` `ToBase`.
+- If the requested family file is missing, the widget falls back silently to plain `Read-Number` behavior — no warnings, no errors.
+
+**Family file schema** (`units/length.psd1`):
+```powershell
+@{
+    Family            = 'Length'
+    Base              = 'meter'
+    DefaultOutputUnit = @{ Metric = 'meter'; Imperial = 'foot' }
+    UnitDefaults      = @{
+        meter = @{ Min = 0; Max = 10000; Default = 1 }
+        foot  = @{ Min = 0; Max = 32808; Default = 3 }
+    }
+    Units = @(
+        @{ Name = 'meter';      Aliases = @('m','meters');             ToBase = 1.0 }
+        @{ Name = 'centimeter'; Aliases = @('cm','centimeters');       ToBase = 0.01 }
+        @{ Name = 'foot';       Aliases = @('ft','feet',"'",'′');      ToBase = 0.3048 }
+        @{ Name = 'inch';       Aliases = @('in','inches','"','″');    ToBase = 0.0254 }
+        # ...
+    )
+}
+```
+
+**Affine convention** (lock once, document everywhere):
+- `base_value = (input_value + Offset) * Scale`
+- `output    = (base_value / Scale) - Offset`
+- A bare numeric `ToBase` is shorthand for `Scale = N; Offset = 0`.
+
+**Parameters:**
+- `-Prompt`: (Required) Label shown before the input.
+- `-Family`: (Required) Family name. Resolves to `units/<Family>.psd1` (case-insensitive filename match — `-Family Length` finds `length.psd1`).
+- `-Min` / `-Max` / `-Default`: Bounds and initial value, expressed in `-OutputUnit`. Required unless `-DefaultsByUnit` is set and the family has a matching `UnitDefaults` entry. Explicit values always win for partial overrides.
+- `-OutputUnit`: Unit used for display and the conversion decorator. Defaults to the family's region-derived choice (Metric vs Imperial from `[RegionInfo]::CurrentRegion`).
+- `-InputUnit`: Unit assumed for bare numbers without an alias. Defaults to `-OutputUnit` ("I'm typing in the unit I see").
+- `-DefaultsByUnit`: (Switch) Pull Min/Max/Default from `UnitDefaults[OutputUnit]` in the family file. Explicit `-Min` / `-Max` / `-Default` still override.
+- `-ShowConversion`: (Switch, default on) Render `[≈ value OutputUnit]` between the prompt and the field. Pass `-ShowConversion:$false` to hide.
+- `-Precision`, `-Prefix`, `-Suffix`, `-NoColor`, `-Bar`, `-BarWidth`, `-Ascii`: forwarded to [`Read-Number`](#read-number); same semantics.
+
+**Bundled families:**
+
+| Family | Units | Aliases (selected) | Notes |
+|--------|-------|-------------------|-------|
+| `Length` | meter, centimeter, millimeter, kilometer, inch, foot, yard, mile | `m`, `cm`, `mm`, `km`, `in`, `inches`, `"`, `″`, `ft`, `feet`, `'`, `′`, `yd`, `mi` | Base = meter. Per-region default: Imperial → `foot`, Metric → `meter`. |
+| `Temperature` | celsius, fahrenheit, kelvin | `°C`, `C`, `degC`, `°F`, `F`, `degF`, `K` | Base = celsius. Affine `ToBase` for fahrenheit (`Scale=5/9, Offset=-32`) and kelvin (`Scale=1, Offset=-273.15`). Per-region default: Imperial → `fahrenheit`, Metric → `celsius`. Kelvin is opt-in only. This is the family that `Read-Temperature` shims onto. |
+
+**Helpers:**
+- `Get-MeasurementFamily` — list bundled families (`.psd1` filenames in `units/`).
+
+**Example:**
+```powershell
+Import-Module ./pwshTui.psd1
+
+# Region-default unit, default range from units/length.psd1
+$distance = Read-Measurement -Prompt 'Distance:' -Family Length -DefaultsByUnit
+
+# Explicit foot range with metric conversion visible:
+$height = Read-Measurement -Prompt 'Height:' -Family Length -OutputUnit foot `
+    -Min 0 -Max 8 -Default 5.5
+
+# Drop the conversion decorator (numeric-only display):
+$thickness = Read-Measurement -Prompt 'Thickness:' -Family Length -OutputUnit millimeter `
+    -Min 0 -Max 1000 -Default 12 -ShowConversion:$false
+```
+
+**Adding a family:** create `units/<MyFamily>.psd1` matching the schema above. No code change needed — `Read-Measurement -Family MyFamily` resolves it via the loader.
 
 ---
 
