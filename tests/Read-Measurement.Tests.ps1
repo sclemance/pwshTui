@@ -96,7 +96,7 @@ Describe 'ConvertTo-MeasurementBase' {
         {
             InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
                 param($Fam)
-                ConvertTo-MeasurementBase -Value 1 -Family $Fam -UnitName parsec
+                ConvertTo-MeasurementBase -Value 1 -Family $Fam -UnitName not-a-real-unit
             }
         } | Should -Throw
     }
@@ -226,6 +226,45 @@ Describe 'ConvertTo-MeasurementValue (parser)' {
             }
             $r.Ok | Should -BeTrue
             [Math]::Abs($r.Value - (3 * 0.3048)) | Should -BeLessThan 1e-9
+        }
+
+        It '"500µm" parses to 5e-4 m (micrometer with micro sign)' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '500µm' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            [Math]::Abs($r.Value - 0.0005) | Should -BeLessThan 1e-9
+        }
+
+        It '"500um" (ASCII-friendly micrometer alias) parses the same as 500µm' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '500um' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            [Math]::Abs($r.Value - 0.0005) | Should -BeLessThan 1e-9
+        }
+
+        It '"3dam" parses to 30 m (decameter)' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '3dam' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 30
+        }
+
+        It '"1pc" round-trips through base back to 1 parsec' {
+            $base = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                (ConvertTo-MeasurementValue -Buffer '1pc' -Family $Fam).Value
+            }
+            $back = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam; B = $base } {
+                param($Fam, $B)
+                ConvertFrom-MeasurementBase -BaseValue $B -Family $Fam -UnitName parsec
+            }
+            $back | Should -Be ([decimal]1)
         }
     }
 
