@@ -2360,10 +2360,22 @@ function Read-Number {
     .PARAMETER Decorator
         Optional scriptblock called once per render with the current parsed
         value ([decimal]). Whatever string it returns is written between
-        the prompt and the prefix — used by wrappers like Read-Percentage
-        -Bar to render a live progress bar that updates as the value
-        changes. The decorator owns its own ANSI escapes if it wants
-        color; nothing is wrapped or styled by the framework.
+        the prompt and the prefix — useful for live, value-driven
+        decoration (signal bars, level meters, sparklines). The decorator
+        owns its own ANSI escapes if it wants color; nothing is wrapped
+        or styled by the framework. When both -Bar and -Decorator are
+        passed, -Bar wins (it builds a decorator internally).
+    .PARAMETER Bar
+        Render a live progress bar between the prompt and the numeric
+        value, tracking how far the current value sits between -Min and
+        -Max (e.g. "Port: [██████░░░░░░░░░░░░░░] 16384"). Updates each
+        tick as arrow keys, typing, or paste change the value.
+    .PARAMETER BarWidth
+        Bar width in characters. Default: 20. Only meaningful with -Bar.
+    .PARAMETER Ascii
+        Force ASCII bar glyphs ('#'/'-') instead of Unicode ('█'/'░').
+        Defaults to $script:_AsciiMode (PWSHTUI_ASCII env var). Only
+        meaningful with -Bar.
     .EXAMPLE
         PS> Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
     .EXAMPLE
@@ -2371,6 +2383,8 @@ function Read-Number {
     .EXAMPLE
         PS> Read-Number -Prompt 'Amount:' -Min 0 -Max 1000000000 -Precision 2 `
                         -Prefix '$' -ThousandsSeparator
+    .EXAMPLE
+        PS> Read-Number -Prompt 'Volume:' -Min 0 -Max 11 -Default 7 -Bar
     .OUTPUTS
         [decimal] entered value, or $null on Escape.
     #>
@@ -2387,7 +2401,10 @@ function Read-Number {
         [string]$Suffix = '',
         [switch]$ThousandsSeparator,
         [switch]$NoColor,
-        [scriptblock]$Decorator
+        [scriptblock]$Decorator,
+        [switch]$Bar,
+        [ValidateRange(5, 80)][int]$BarWidth = 20,
+        [switch]$Ascii
     )
 
     Assert-InteractiveHost 'Read-Number'
@@ -2413,6 +2430,46 @@ function Read-Number {
     $culture = [System.Globalization.CultureInfo]::CurrentCulture
     $sepChar = $culture.NumberFormat.NumberGroupSeparator
     $dotChar = $culture.NumberFormat.NumberDecimalSeparator
+
+    # -Bar builds its own decorator (overriding any caller-supplied one).
+    # Resolve glyphs once up here. The decorator closure can capture
+    # variables but its function-resolution scope is the global session
+    # state (a quirk of GetNewClosure), so it would not find module-
+    # private helpers like Get-Glyphs or Format-ValueBar. Keeping the
+    # closure body to plain operators + captured POD values sidesteps
+    # the whole issue.
+    #
+    # NOTE — deliberate duplication: the math below mirrors
+    # Format-ValueBar. We accept the dup because (a) the logic is tiny
+    # (~10 lines of arithmetic and a format string), (b) the alternative
+    # is non-obvious session-state plumbing that requires its own
+    # explanation, and (c) Format-ValueBar remains the canonical, unit-
+    # tested implementation for any direct callers. If the bar geometry,
+    # glyphs, or color scheme ever change, both spots must be updated
+    # together.
+    if ($Bar) {
+        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+        $glyphs = Get-Glyphs $asciiOn
+        $fillChar = $glyphs.BarFill
+        $emptyChar = $glyphs.BarEmpty
+        $barMin = $Min
+        $barMax = $Max
+        $Decorator = {
+            param($v)
+            $range = [double]($barMax - $barMin)
+            $ratio = if ($range -le 0) { 1.0 } else { [double]($v - $barMin) / $range }
+            if     ($ratio -lt 0.0) { $ratio = 0.0 }
+            elseif ($ratio -gt 1.0) { $ratio = 1.0 }
+            $filled = [int][Math]::Round($ratio * $BarWidth)
+            if     ($filled -lt 0)         { $filled = 0 }
+            elseif ($filled -gt $BarWidth) { $filled = $BarWidth }
+            $empty = $BarWidth - $filled
+            $filledStr = $fillChar * $filled
+            $emptyStr  = $emptyChar * $empty
+            if ($noColorOn) { return "[$filledStr$emptyStr] " }
+            return "[`e[92m$filledStr`e[90m$emptyStr`e[0m] "
+        }.GetNewClosure()
+    }
 
     $lastValidValue = $Default
     $buffer = Format-NumberValue -Value $Default -Precision $Precision `
@@ -4782,23 +4839,27 @@ function Get-CurrencyFormat {
     }
 }
 
-function Format-PercentageBar {
-    # Internal: render a percentage as a fixed-width progress bar string.
-    # Used by Read-Percentage -Bar; extracted as a helper so the cell math
-    # and color/glyph variants are unit-testable without going through the
-    # interactive widget. Returns a string like "[████████░░░░░░░░░░░░] "
-    # (Unicode/color) or "[####------] " (ASCII/no-color). Filled cells are
-    # round(Value/100 * Width); ratio clamps to [0, 1] so values outside
-    # 0..100 still render a sensible bar end.
+function Format-ValueBar {
+    # Internal: render a value-in-range as a fixed-width progress bar
+    # string. Used by Read-Number -Bar (and transitively Read-Percentage
+    # -Bar). Returns "[████████░░░░░░░░░░░░] " (Unicode/color) or
+    # "[####------] " (ASCII/no-color). Filled cells are
+    # round((Value-Min)/(Max-Min) * Width); ratio clamps to [0, 1] so
+    # values outside [Min, Max] still render a sensible bar end. When
+    # Min == Max, ratio is treated as 1 (fully filled — degenerate range
+    # has no meaningful "progress" but a full bar is the saner default).
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][decimal]$Value,
+        [Parameter(Mandatory)][decimal]$Min,
+        [Parameter(Mandatory)][decimal]$Max,
         [Parameter(Mandatory)][ValidateRange(1, 200)][int]$Width,
         [switch]$Ascii,
         [switch]$NoColor
     )
-    $ratio = [double]$Value / 100.0
+    $range = [double]($Max - $Min)
+    $ratio = if ($range -le 0) { 1.0 } else { [double]($Value - $Min) / $range }
     if ($ratio -lt 0.0) { $ratio = 0.0 }
     if ($ratio -gt 1.0) { $ratio = 1.0 }
     $filled = [int][Math]::Round($ratio * $Width)
@@ -4824,9 +4885,8 @@ function Read-Percentage {
         Thin wrapper over Read-Number rendering a ' %' suffix. The on-screen
         range is always 0..100; that's also the default return value. Pass
         -AsFraction to receive the value divided by 100 (useful when piping
-        into a multiplier downstream). Pass -Bar to render a live progress
-        bar between the prompt and the numeric value — bar updates each
-        time the value changes (arrow keys, typing, paste).
+        into a multiplier downstream). -Bar / -BarWidth / -Ascii are
+        forwarded to Read-Number; see its help for full bar semantics.
     .PARAMETER Prompt
         Label shown before the input. Default: 'Percentage:'.
     .PARAMETER Default
@@ -4838,14 +4898,12 @@ function Read-Percentage {
         Return value/100 (so 75 → 0.75). On-screen display is unchanged.
     .PARAMETER Bar
         Show a live progress bar between the prompt and the numeric value
-        (e.g. "Coverage: [██████████░░░░░░░░░░] 50 %"). The bar updates
-        every render, tracking the current value as arrow keys or typing
-        change it.
+        (e.g. "Coverage: [██████████░░░░░░░░░░] 50 %"). Forwarded to
+        Read-Number -Bar.
     .PARAMETER BarWidth
-        Bar width in characters. Default: 20. Only meaningful with -Bar.
+        Bar width in characters. Default: 20. Forwarded to Read-Number.
     .PARAMETER Ascii
-        Force ASCII bar glyphs ('#'/'-') instead of Unicode ('█'/'░').
-        Defaults to $script:_AsciiMode. Only meaningful with -Bar.
+        Force ASCII bar glyphs ('#'/'-'). Forwarded to Read-Number.
     .OUTPUTS
         [decimal] 0..100 by default, or 0..1 with -AsFraction; $null on Escape.
     #>
@@ -4870,44 +4928,9 @@ function Read-Percentage {
         Precision = $Precision
         Suffix    = ' %'
         NoColor   = $NoColor
-    }
-    if ($Bar) {
-        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
-        $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
-        # Resolve glyphs once up here. The decorator closure can capture
-        # variables but its function-resolution scope is the global session
-        # state (a quirk of GetNewClosure), so it would not find module-
-        # private helpers like Get-Glyphs or Format-PercentageBar. Keeping
-        # the closure body to plain operators + captured values sidesteps
-        # the whole issue.
-        #
-        # NOTE — deliberate duplication: the math below mirrors
-        # Format-PercentageBar. We accept the dup because (a) the logic is
-        # tiny (~10 lines of arithmetic and a format string), (b) the
-        # alternative is non-obvious session-state plumbing that requires
-        # its own explanation, and (c) Format-PercentageBar remains the
-        # canonical, unit-tested implementation for any direct callers.
-        # If the bar geometry, glyphs, or color scheme ever change, both
-        # spots must be updated together. The Format-PercentageBar tests
-        # will keep covering the helper; the Read-Percentage -Bar tests
-        # exercise this inlined path end-to-end.
-        $glyphs = Get-Glyphs $asciiOn
-        $fillChar = $glyphs.BarFill
-        $emptyChar = $glyphs.BarEmpty
-        $forwarded['Decorator'] = {
-            param($v)
-            $ratio = [double]$v / 100.0
-            if     ($ratio -lt 0.0) { $ratio = 0.0 }
-            elseif ($ratio -gt 1.0) { $ratio = 1.0 }
-            $filled = [int][Math]::Round($ratio * $BarWidth)
-            if     ($filled -lt 0)        { $filled = 0 }
-            elseif ($filled -gt $BarWidth) { $filled = $BarWidth }
-            $empty = $BarWidth - $filled
-            $filledStr = $fillChar * $filled
-            $emptyStr  = $emptyChar * $empty
-            if ($noColorOn) { return "[$filledStr$emptyStr] " }
-            return "[`e[92m$filledStr`e[90m$emptyStr`e[0m] "
-        }.GetNewClosure()
+        Bar       = $Bar
+        BarWidth  = $BarWidth
+        Ascii     = $Ascii
     }
     $val = Read-Number @forwarded
     if ($null -eq $val) { return $null }

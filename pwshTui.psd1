@@ -1,6 +1,6 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.13.0'
+    ModuleVersion        = '0.14.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
@@ -16,6 +16,30 @@
             Tags         = @('TUI', 'Console', 'Menu', 'FuzzySearch', 'Selector', 'Input', 'Linux', 'Mac', 'Windows', 'CrossPlatform')
             ProjectUri   = 'https://github.com/sclemance/pwshTui'
             ReleaseNotes = @'
+0.14.0
+- Read-Number gains -Bar / -BarWidth / -Ascii — the live progress
+  bar previously available only via Read-Percentage -Bar is now a
+  first-class Read-Number feature. The bar's fill ratio is computed
+  from (Value - Min) / (Max - Min), clamping to [0, 1], so any
+  bounded numeric field can render as a bar: port numbers, sensor
+  thresholds, volume sliders, signal strengths. -BarWidth defaults
+  to 20 (range 5..80); -Ascii forces '#'/'-' glyphs and falls back
+  to $script:_AsciiMode. When both -Bar and -Decorator are passed,
+  -Bar wins (it builds the decorator internally).
+- Read-Percentage -Bar / -BarWidth / -Ascii are now a clean pass-
+  through to Read-Number — same end behavior, no duplicated logic.
+- Format-PercentageBar (internal helper) renamed to Format-ValueBar
+  with a wider signature: -Value -Min -Max -Width [-Ascii] [-NoColor].
+  When Min == Max the bar renders as fully filled (degenerate range
+  has no meaningful "progress" but a full bar is the saner default).
+- Tests: existing Format-PercentageBar coverage is reframed for
+  Format-ValueBar (same cases plus new non-percentage range cases:
+  zero-shifted, midpoint of [-5..15], negative-only ranges, Min==Max
+  degenerate case). New Read-Number -Bar tests exercise port,
+  temperature, and billion-scale ranges. Read-Percentage -Bar tests
+  now assert pass-through to Read-Number rather than decorator
+  construction.
+
 0.13.0
 - Get-PaginatedSelection -PreSelected: pre-check items on open in
   -MultiSelect mode. Items are matched by identity (reference equality

@@ -129,58 +129,83 @@ Describe 'Read-Percentage' {
     }
 }
 
-Describe 'Format-PercentageBar' {
-    Context 'Cell math' {
-        It 'fills exactly Width cells at 100%' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 100 -Width 10 -Ascii -NoColor }
+Describe 'Format-ValueBar' {
+    Context 'Cell math (0..100 range mirrors the old percentage cases)' {
+        It 'fills exactly Width cells at the top of the range' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 100 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             $s | Should -Be '[##########] '
         }
 
-        It 'fills zero cells at 0%' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 0 -Width 10 -Ascii -NoColor }
+        It 'fills zero cells at the bottom of the range' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 0 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             $s | Should -Be '[----------] '
         }
 
-        It 'fills half the cells at 50%' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 50 -Width 10 -Ascii -NoColor }
+        It 'fills half the cells at the midpoint' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 50 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             $s | Should -Be '[#####-----] '
         }
 
         It 'rounds to nearest cell (75% of 10 → 8 not 7)' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 75 -Width 10 -Ascii -NoColor }
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 75 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             ($s.Substring(1, 10) -replace '-', '').Length | Should -Be 8
         }
 
-        It 'clamps negative values to empty' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value -25 -Width 10 -Ascii -NoColor }
+        It 'clamps values below Min to empty' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value -25 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             $s | Should -Be '[----------] '
         }
 
-        It 'clamps values above 100 to full' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 150 -Width 10 -Ascii -NoColor }
+        It 'clamps values above Max to full' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 150 -Min 0 -Max 100 -Width 10 -Ascii -NoColor }
             $s | Should -Be '[##########] '
+        }
+    }
+
+    Context 'Non-percentage ranges' {
+        It 'fills proportionally for a Min/Max that does not start at 0' {
+            # Value 8 in [1..65535] → ratio ~0.0001 → 0 filled cells for width 10
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 8 -Min 1 -Max 65535 -Width 10 -Ascii -NoColor }
+            $s | Should -Be '[----------] '
+        }
+
+        It 'fills proportionally at the midpoint of a non-zero-anchored range' {
+            # Value 50 in [0..100], but also 5 in [-5..15] → both are halfway
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 5 -Min -5 -Max 15 -Width 10 -Ascii -NoColor }
+            $s | Should -Be '[#####-----] '
+        }
+
+        It 'handles negative-only ranges' {
+            # Value -10 in [-100..0] → ratio = 90/100 = 0.9 → 9 cells filled
+            $s = InModuleScope pwshTui { Format-ValueBar -Value -10 -Min -100 -Max 0 -Width 10 -Ascii -NoColor }
+            ($s.Substring(1, 10) -replace '-', '').Length | Should -Be 9
+        }
+
+        It 'returns a full bar when Min == Max (degenerate range)' {
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 7 -Min 7 -Max 7 -Width 6 -Ascii -NoColor }
+            $s | Should -Be '[######] '
         }
     }
 
     Context 'Glyph and color variants' {
         It 'uses Unicode glyphs by default' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 50 -Width 4 -NoColor }
-            $s | Should -Match '█'   # full block somewhere in the bar
-            $s | Should -Match '░'   # light shade somewhere in the bar
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 50 -Min 0 -Max 100 -Width 4 -NoColor }
+            $s | Should -Match '█'
+            $s | Should -Match '░'
         }
 
         It 'embeds ANSI color codes when -NoColor is not set' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 50 -Width 4 }
-            $s | Should -Match "`e\["       # at least one ANSI CSI escape
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 50 -Min 0 -Max 100 -Width 4 }
+            $s | Should -Match "`e\["
         }
 
         It 'embeds no ANSI escapes when -NoColor is set' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 50 -Width 4 -NoColor }
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 50 -Min 0 -Max 100 -Width 4 -NoColor }
             $s | Should -Not -Match "`e\["
         }
 
         It 'uses ASCII glyphs only when -Ascii is set' {
-            $s = InModuleScope pwshTui { Format-PercentageBar -Value 50 -Width 4 -Ascii -NoColor }
+            $s = InModuleScope pwshTui { Format-ValueBar -Value 50 -Min 0 -Max 100 -Width 4 -Ascii -NoColor }
             $s | Should -Not -Match '█'
             $s | Should -Not -Match '░'
             $s | Should -Match '#'
@@ -189,55 +214,34 @@ Describe 'Format-PercentageBar' {
     }
 }
 
-Describe 'Read-Percentage -Bar' {
-    It 'does not pass a Decorator when -Bar is absent' {
+Describe 'Read-Percentage -Bar (pass-through to Read-Number)' {
+    It 'does not pass -Bar to Read-Number when the wrapper -Bar is absent' {
         InModuleScope pwshTui {
             Mock Read-Number { return [decimal]50 }
             Read-Percentage -Default 50 | Out-Null
             Should -Invoke Read-Number -Times 1 -ParameterFilter {
-                $null -eq $Decorator
+                -not $Bar.IsPresent
             }
         }
     }
 
-    It 'passes a scriptblock Decorator to Read-Number when -Bar is set' {
+    It 'forwards -Bar to Read-Number when set' {
         InModuleScope pwshTui {
             Mock Read-Number { return [decimal]50 }
             Read-Percentage -Default 50 -Bar | Out-Null
             Should -Invoke Read-Number -Times 1 -ParameterFilter {
-                $Decorator -is [scriptblock]
+                $Bar.IsPresent -and $Min -eq 0 -and $Max -eq 100
             }
         }
     }
 
-    It 'the forwarded Decorator produces a bar string when invoked' {
-        # Pester's Mock can capture the parameters that were passed; pull the
-        # Decorator scriptblock out and exercise it directly to confirm it's
-        # actually wired to Format-PercentageBar correctly.
+    It 'forwards -BarWidth to Read-Number' {
         InModuleScope pwshTui {
-            $script:_capturedDecorator = $null
-            Mock Read-Number {
-                $script:_capturedDecorator = $Decorator
-                return [decimal]50
-            }
-            Read-Percentage -Default 50 -Bar -BarWidth 10 -Ascii -NoColor | Out-Null
-            $script:_capturedDecorator | Should -Not -BeNullOrEmpty
-            $rendered = & $script:_capturedDecorator ([decimal]50)
-            $rendered | Should -Be '[#####-----] '
-        }
-    }
-
-    It 'honors -BarWidth' {
-        InModuleScope pwshTui {
-            $script:_capturedDecorator = $null
-            Mock Read-Number {
-                $script:_capturedDecorator = $Decorator
-                return [decimal]100
-            }
+            Mock Read-Number { return [decimal]100 }
             Read-Percentage -Bar -BarWidth 30 -Ascii -NoColor | Out-Null
-            $rendered = & $script:_capturedDecorator ([decimal]100)
-            # 30 fill chars between the brackets
-            $rendered | Should -Be ('[' + ('#' * 30) + '] ')
+            Should -Invoke Read-Number -Times 1 -ParameterFilter {
+                $BarWidth -eq 30 -and $Ascii.IsPresent
+            }
         }
     }
 }

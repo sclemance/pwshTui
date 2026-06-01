@@ -400,7 +400,9 @@ function Show-NumberDemo {
     Write-Host (Get-DemoString 'Hint_Number1') -ForegroundColor DarkGray
     Write-Host (Get-DemoString 'Hint_Number2') -ForegroundColor DarkGray
 
-    $port = Read-Number -Prompt (Get-DemoString 'Prompt_Port') -Min 1 -Max 65535 -Default 8080
+    # -Bar works on any Read-Number range, not just percentages — here it
+    # shows where the chosen port sits in the 1..65535 space at a glance.
+    $port = Read-Number -Prompt (Get-DemoString 'Prompt_Port') -Min 1 -Max 65535 -Default 8080 -Bar
     if ($null -ne $port) { Write-Host (Get-DemoString 'Result_Captured' $port) -ForegroundColor Green }
 
     $pct = Read-Number -Prompt (Get-DemoString 'Prompt_Coverage') -Min 0 -Max 100 -Default 75 -Suffix ' %'

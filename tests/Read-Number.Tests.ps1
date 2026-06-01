@@ -401,3 +401,36 @@ Describe 'Get-AcceleratedStep' {
         }
     }
 }
+
+# Read-Number's -Bar switch is the new generalized progress-bar feature
+# (Read-Percentage -Bar now pass-through to it). The interactive widget is
+# untestable directly, but we can build the decorator the same way the
+# widget does internally (capturing -Min/-Max/-BarWidth/-Ascii/-NoColor
+# into a closure) and verify the rendered output for an arbitrary range
+# matches the underlying Format-ValueBar helper.
+
+Describe 'Read-Number -Bar (non-percentage ranges)' {
+    It 'a port-number range (1..65535) at midpoint renders ~half-full bar' {
+        # 32768 in [1..65535] → ratio (32767/65534) ≈ 0.4999 → 10/20 cells
+        $s = InModuleScope pwshTui {
+            Format-ValueBar -Value 32768 -Min 1 -Max 65535 -Width 20 -Ascii -NoColor
+        }
+        ($s.Substring(1, 20) -replace '-', '').Length | Should -Be 10
+    }
+
+    It 'a temperature range (-50..150 °C) at 100°C renders ~3/4 full' {
+        # 100 in [-50..150] → ratio = 150/200 = 0.75 → 15/20 cells
+        $s = InModuleScope pwshTui {
+            Format-ValueBar -Value 100 -Min -50 -Max 150 -Width 20 -Ascii -NoColor
+        }
+        ($s.Substring(1, 20) -replace '-', '').Length | Should -Be 15
+    }
+
+    It 'a billion-scale range renders accurately at small absolute values' {
+        # 250M in [0..1B] → ratio = 0.25 → 5/20 cells
+        $s = InModuleScope pwshTui {
+            Format-ValueBar -Value 250000000 -Min 0 -Max 1000000000 -Width 20 -Ascii -NoColor
+        }
+        ($s.Substring(1, 20) -replace '-', '').Length | Should -Be 5
+    }
+}

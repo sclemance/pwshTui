@@ -9,7 +9,7 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Get-PaginatedSelection`](#get-paginatedselection) - A powerful interactive selector for arrays or complex objects
 - [`Read-MaskedInput`](#read-maskedinput) - Formatted input prompt that enforces structure for fixed-length data (phone, MAC)
 - [`Read-ValidatedInput`](#read-validatedinput) - Free-form input field with live regex validation
-- [`Read-Number`](#read-number) - Bounded numeric input ([decimal]) with arrow-key acceleration, optional `-Prefix`/`-Suffix` for units, and `-ThousandsSeparator` for grouped display
+- [`Read-Number`](#read-number) - Bounded numeric input ([decimal]) with arrow-key acceleration, optional `-Prefix`/`-Suffix` for units, `-ThousandsSeparator` for grouped display, and optional `-Bar` for live progress-bar visualization
 - [`Read-Confirmation`](#read-confirmation) - Dedicated Yes/No prompt with single-key or arrow-key navigation
 - [`Read-Password`](#read-password) - Masked password prompt that returns a `SecureString` by default
 - [`Read-Choice`](#read-choice) - One-line N-option selector with optional multi-select
@@ -176,7 +176,8 @@ A bounded numeric input field for integers or fixed-precision decimals, with arr
 - **Unit decoration:** `-Prefix` and `-Suffix` wrap the numeric value with literal strings (`"$"`, `" %"`, `" km/h"`, `" °C"`). The widget renders them but does not measure CJK width — wide-character suffixes are passed through literally.
 - **Culture-aware separators:** `-ThousandsSeparator` renders the value using the current culture's grouping (en-US `1,234,567`, de-DE `1.234.567`) and accepts the grouping character during typed input. The decimal mark also follows the current culture.
 - **Paste safety:** bracketed-paste mode delivers pasted content as one unit. Pasted text is parsed as a single number and rejected wholesale (with a visible warning) if it doesn't fit `-Precision` and `[Min, Max]` — matches `Read-ValidatedInput`'s reject-paste convention.
-- **`-Decorator` hook:** an optional scriptblock called once per render with the current parsed value; whatever string it returns is written between the prompt and the prefix. Used by [`Read-Percentage`](#numeric-input-wrappers) `-Bar` to render a live progress bar, and available for any future value-driven decoration (signal bars, level meters, sparklines).
+- **`-Bar` visualization:** an optional live progress bar between the prompt and the numeric value, showing where the current value sits between `-Min` and `-Max` (e.g. `Port: [██████░░░░░░░░░░░░░░] 8080`). Works for any bounded range, not just percentages. `-BarWidth` controls width (default 20); `-Ascii` forces `#`/`-` glyphs.
+- **`-Decorator` hook:** an optional scriptblock called once per render with the current parsed value; whatever string it returns is written between the prompt and the prefix. The framework's `-Bar` is built on top of this; the hook is exposed publicly so callers can render any value-driven decoration (signal bars, level meters, sparklines, ad-hoc status). When both `-Bar` and `-Decorator` are passed, `-Bar` wins.
 
 **Parameters:**
 - `-Prompt`: (Required) The text displayed before the input field.
@@ -190,6 +191,9 @@ A bounded numeric input field for integers or fixed-precision decimals, with arr
 - `-ThousandsSeparator`: (Switch) Render and accept the current culture's grouping separator.
 - `-NoColor`: (Switch) Disable ANSI styling. Cursor becomes `[X]`-bracketed and validity is signaled by a trailing `[OK]`/`[??]` marker instead of red/green coloring. See [Rendering Modes](#rendering-modes).
 - `-Decorator`: (`[scriptblock]`) Per-render hook. Invoked with the current parsed value (or last-valid value during transient invalid edits); the returned string is written between the prompt and the prefix. The decorator owns its own ANSI escapes if it wants color.
+- `-Bar`: (Switch) Render a live progress bar between the prompt and the numeric value, tracking how far the current value sits between `-Min` and `-Max`. Updates each tick as the value changes. When both `-Bar` and `-Decorator` are passed, `-Bar` wins.
+- `-BarWidth`: Bar width in characters, `5`..`80`. Default: `20`. Only meaningful with `-Bar`.
+- `-Ascii`: (Switch) Force ASCII bar glyphs (`#`/`-`) instead of Unicode (`█`/`░`). Defaults to `$script:_AsciiMode` (env var `PWSHTUI_ASCII`). Only meaningful with `-Bar`.
 
 **Shortcuts:**
 - `Up` / `Down`: Increment / decrement by the (accelerated) step; clamps to `[Min, Max]`. Held arrows accelerate continuously.
@@ -211,6 +215,9 @@ Import-Module ./pwshTui.psd1
 
 # Port number
 $port = Read-Number -Prompt 'Port:' -Min 1 -Max 65535 -Default 8080
+
+# Volume slider with a live bar (works on any range, not just percentages)
+$volume = Read-Number -Prompt 'Volume:' -Min 0 -Max 11 -Default 7 -Bar
 
 # Percentage with a suffix
 $pct = Read-Number -Prompt 'Coverage:' -Min 0 -Max 100 -Suffix ' %'
@@ -486,13 +493,13 @@ Thin opinionated wrappers around [`Read-Number`](#read-number) for the three mos
 
 | Wrapper | Bounds / format | Locale-derived defaults | Wrapper-specific switches |
 |---|---|---|---|
-| `Read-Percentage` | `0`..`100`, ` %` suffix | — | `-AsFraction` (returns `value/100`), `-Bar` + `-BarWidth` (default 20) for live progress bar, `-Ascii` to force `#`/`-` glyphs |
+| `Read-Percentage` | `0`..`100`, ` %` suffix | — | `-AsFraction` (returns `value/100`); `-Bar` / `-BarWidth` / `-Ascii` are pass-throughs to [`Read-Number`](#read-number)'s bar |
 | `Read-Temperature` | Per-unit terrestrial-weather bounds | `-Unit` from `[RegionInfo]::CurrentRegion`: **Fahrenheit** for US, BS, BZ, KY, PW, FM, MH, LR; **Celsius** elsewhere. Kelvin is opt-in only. | `-Unit Celsius`/`Fahrenheit`/`Kelvin` — per-unit `-Min`/`-Max`/`-Default` can each be overridden independently |
 | `Read-Currency` | `0`..`999,999,999` default | `-Currency` from `[RegionInfo]::CurrentRegion.ISOCurrencySymbol`. Symbol, decimal places, and prefix/suffix placement derived from the currency's `CultureInfo.NumberFormat` (USD → `$1,234.56`/2dp, EUR under European cultures → `1.234,56 €`/2dp, JPY → `¥1234`/0dp, BHD → 3dp). Unknown ISO codes fall back to literal-prefix + 2dp. | `-Currency <ISO 4217>` — always passes `-ThousandsSeparator`. Captures only; does **not** convert between currencies |
 
 All three accept `-Prompt`, `-Default`, `-Precision`, and `-NoColor` and forward them to `Read-Number`. Each returns a `[decimal]` (or `$null` on cancel) — `Read-Percentage -AsFraction` returns the value divided by 100 (so `75` → `0.75`).
 
-**`Read-Percentage -Bar` callout:** the bar renders between the prompt and the numeric value and updates each tick as arrow keys or typing change the value (e.g. `Coverage: [██████████░░░░░░░░░░] 50 %`). Filled portion is green, empty portion dim gray in color mode; `-NoColor` drops the ANSI. `-Ascii` (or `$env:PWSHTUI_ASCII=1`) forces `#`/`-` glyphs instead of `█`/`░`.
+**Bar visualization:** `-Bar` works on any [`Read-Number`](#read-number) range, not just percentages — see its docs for full bar semantics (geometry, glyph selection, color behavior). `Read-Percentage -Bar` is the same feature with `-Min 0 -Max 100` already wired up.
 
 **Example:**
 ```powershell
