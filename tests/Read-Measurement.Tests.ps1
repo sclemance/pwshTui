@@ -266,6 +266,43 @@ Describe 'ConvertTo-MeasurementValue (parser)' {
             }
             $back | Should -Be ([decimal]1)
         }
+
+        It '"1NM" parses to 1852 m (international nautical mile)' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '1NM' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 1852
+        }
+
+        It '"100nmi" parses to 185200 m (ICAO alias)' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '100nmi' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            $r.Value | Should -Be 185200
+        }
+
+        It '"6ftm" parses to 10.9728 m (fathom — longest-match beats ft)' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '6ftm' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            [Math]::Abs([double]($r.Value - 10.9728)) | Should -BeLessThan 1e-9
+        }
+
+        It 'compound "1nmi 5ftm" sums nautical mile + fathom to 1861.144 m' {
+            $r = InModuleScope pwshTui -Parameters @{ Fam = $script:lengthFam } {
+                param($Fam)
+                ConvertTo-MeasurementValue -Buffer '1nmi 5ftm' -Family $Fam
+            }
+            $r.Ok | Should -BeTrue
+            # 1852 + 5*1.8288 = 1861.144
+            [Math]::Abs([double]($r.Value - 1861.144)) | Should -BeLessThan 1e-9
+        }
     }
 
     Context 'Compound input' {
