@@ -135,6 +135,40 @@ $menuData = @(
     @{ Label = "Exit Application"; Value = "exit" }
 )
 
+# A settings-style tree exercising the value column (Display) and the help band
+# (HelpTitle + Help). Content is English filler — like $menuData above, real
+# callers supply their own translated data. Note "Telemetry" deliberately omits
+# Help to show the band reserving a blank line so the box height stays steady.
+$settingsMenuData = @(
+    @{ Label = "Theme";     Value = "set_theme"; Display = "Dark";
+       HelpTitle = "Color scheme"; Help = "Palette used across every widget — borders, highlights, and prompt text all follow it." }
+    @{ Label = "Language";  Value = "set_lang";  Display = "English";
+       HelpTitle = "UI language"; Help = "Language for the built-in chrome and prompts. Your own menu data is translated separately." }
+    @{ Label = "Log level"; Value = "set_log";   Display = "Verbose";
+       HelpTitle = "Verbosity"; Help = "How much detail is written to the log. Higher levels help when diagnosing issues but produce larger files." }
+    @{ Label = "Telemetry"; Value = "set_telem"; Display = "Off" }
+    @{ Label = "Advanced";  Display = ""; HelpTitle = "More settings"; Help = "Drill in for less-common options."; Children = @(
+        @{ Label = "Cache size"; Value = "adv_cache"; Display = "256 MB";
+           HelpTitle = "Disk cache"; Help = "Maximum space used for cached data before the oldest entries are evicted." }
+        @{ Label = "Retries";    Value = "adv_retry"; Display = "3";
+           HelpTitle = "Network retries"; Help = "How many times a failed request is retried before giving up." }
+    )}
+    @{ Label = "Back"; Value = "exit" }
+)
+
+# Maps each leaf demo's Value to the primary function it showcases. Used as the
+# right-hand value column when the top-level demo menu is shown with aligned
+# columns — see Add-DemoMenuColumns. Codes are language-neutral, so no l10n here.
+$demoFn = @{
+    paginated = 'Get-PaginatedSelection'; paginated_jump = 'Get-PaginatedSelection'; multiselect = 'Get-PaginatedSelection'
+    nested = 'Invoke-NestedMenu'; nested_deep = 'Invoke-NestedMenu'; nested_bordered = 'Invoke-NestedMenu'; settings_menu = 'Invoke-NestedMenu'
+    masked = 'Read-MaskedInput'; password = 'Read-Password'; validated = 'Read-ValidatedInput'; confirm = 'Read-Confirmation'; choice = 'Read-Choice'
+    number = 'Read-Number'; number_wrappers = 'Read-Number family'; measurement = 'Read-Measurement'; templated = 'Read-Phone family'
+    date = 'Read-Date'; date_calendar = 'Read-Date'; time = 'Read-Time'; time_twelve = 'Read-Time'; timezone = 'Read-Timezone'
+    spinner = 'Show-Spinner'; spinner_timer = 'Show-Spinner'; spinner_styles = 'Show-Spinner'; spinner_closure = 'Show-Spinner'
+    uibox = 'Write-TuiBox'
+}
+
 $systemObjects = @()
 $id = 100
 foreach ($name in @(
@@ -155,6 +189,39 @@ foreach ($name in @(
 }
 
 # --- Demo helpers ------------------------------------------------------------
+
+function Add-DemoMenuColumns {
+    # Enriches the demo menu tree in place so Invoke-NestedMenu renders it with
+    # the aligned value column + help band — i.e. the demo's own navigation
+    # menu showcases those features. It reuses the already-localized labels:
+    # each leaf's "Name (detail)" label is split into a short Label plus the
+    # detail as Help, the showcased function name is attached as Display, and
+    # each parent shows its child count. The only new localized string is the
+    # 'About' help title, so no per-entry retranslation is needed.
+    param([array]$Tree, [hashtable]$FnMap, [string]$AboutTitle)
+    foreach ($node in $Tree) {
+        if ($node.ContainsKey('Children') -and $node.Children -and $node.Children.Count -gt 0) {
+            $node.Display = [string]$node.Children.Count
+            Add-DemoMenuColumns -Tree $node.Children -FnMap $FnMap -AboutTitle $AboutTitle
+        } else {
+            # Only enrich actual demo leaves (those in the function map). The
+            # toggle / language / exit controls keep their plain labels and get
+            # no value/help — so the top tier shows just the count column with no
+            # mostly-empty help band. Each enriched leaf's "Friendly Name
+            # (detail)" label is split into label + help; labels without a
+            # parenthetical keep their text and reserve a blank help line.
+            $val = if ($node.ContainsKey('Value')) { [string]$node.Value } else { '' }
+            if ($FnMap.ContainsKey($val)) {
+                if ($node.Label -match '^(.*?)\s*\((.*)\)\s*$') {
+                    $node.Label     = $matches[1]
+                    $node.HelpTitle = $AboutTitle
+                    $node.Help      = $matches[2]
+                }
+                $node.Display = $FnMap[$val]
+            }
+        }
+    }
+}
 
 function Write-DemoHeader([string]$Title) {
     Write-Host ""
@@ -215,6 +282,14 @@ function Show-NestedMenuDeepDemo {
     Write-DemoHeader (Get-DemoString 'Header_NestedMenuDeep')
     $r = Invoke-NestedMenu -MenuTree $menuData -Title (Get-DemoString 'Title_AdminPortal') -InitialPath @("System Configuration", "Power Options", 1)
     if ($r) { Write-Host (Get-DemoString 'Result_Captured' $r) -ForegroundColor Green }
+    Wait-ReturnKey
+}
+
+function Show-SettingsMenuDemo {
+    Write-DemoHeader (Get-DemoString 'Header_SettingsMenu')
+    $r = Invoke-NestedMenu -MenuTree $settingsMenuData -Title (Get-DemoString 'Title_AdminPortal') -Border -MinWidth 50
+    if ($r) { Write-Host (Get-DemoString 'Result_Captured' $r) -ForegroundColor Green }
+    else    { Write-Host (Get-DemoString 'Result_MenuCancelled') -ForegroundColor Yellow }
     Wait-ReturnKey
 }
 
@@ -523,6 +598,7 @@ while ($running) {
             @{ Label = (Get-DemoString 'Menu_Nested');          Value = "nested" }
             @{ Label = (Get-DemoString 'Menu_NestedDeep');      Value = "nested_deep" }
             @{ Label = (Get-DemoString 'Menu_NestedBordered');  Value = "nested_bordered" }
+            @{ Label = (Get-DemoString 'Menu_SettingsMenu');    Value = "settings_menu" }
         )}
         @{ Label = (Get-DemoString 'Menu_Group_InputPrompts'); Children = @(
             @{ Label = (Get-DemoString 'Menu_MaskedInput');       Value = "masked" }
@@ -561,6 +637,10 @@ while ($running) {
         @{ Label = (Get-DemoString 'Menu_ExitDemo'); Value = "exit" }
     )
 
+    # The demo's own menu doubles as a live showcase of the value column + help
+    # band: enrich it in place before rendering.
+    Add-DemoMenuColumns -Tree $demoMenu -FnMap $demoFn -AboutTitle (Get-DemoString 'Help_About')
+
     $choice = Invoke-NestedMenu -MenuTree $demoMenu -Title (Get-DemoString 'Title_Demo' $modeLabel $script:demoCulture)
     switch ($choice) {
         'paginated'         { Show-PaginatedDemo }
@@ -569,6 +649,7 @@ while ($running) {
         'nested'            { Show-NestedMenuDemo }
         'nested_deep'       { Show-NestedMenuDeepDemo }
         'nested_bordered'   { Show-NestedMenuBorderedDemo }
+        'settings_menu'     { Show-SettingsMenuDemo }
         'masked'            { Show-MaskedInputDemo }
         'password'          { Show-PasswordDemo }
         'validated'         { Show-ValidatedInputDemo }

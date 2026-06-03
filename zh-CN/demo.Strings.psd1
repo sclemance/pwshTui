@@ -8,6 +8,7 @@ Menu_Group_AsyncLayout        = 异步与布局
 Menu_ToggleRenderMode         = 切换渲染模式 (当前: {0})
 Menu_ChangeLanguage           = 切换语言 (当前: {0})
 Menu_ExitDemo                 = 退出演示
+Help_About                    = 说明
 
 Menu_Paginated                = 分页选择 (可搜索)
 Menu_PaginatedJump            = 分页选择 (-InitialIndex 跳到 #25)
@@ -15,6 +16,7 @@ Menu_MultiSelect              = 分页多选 (空格切换)
 Menu_Nested                   = 嵌套菜单
 Menu_NestedDeep               = 嵌套菜单 (-InitialPath 直链)
 Menu_NestedBordered           = 嵌套菜单 (带边框 + AltScreen)
+Menu_SettingsMenu             = 设置菜单 (对齐值 + 帮助)
 
 Menu_MaskedInput              = 掩码输入 (电话、MAC)
 Menu_PasswordInput            = 密码输入 (SecureString、确认、PIN)
@@ -52,6 +54,7 @@ Header_MultiSelect            = Get-PaginatedSelection -MultiSelect
 Header_NestedMenu             = Invoke-NestedMenu
 Header_NestedMenuDeep         = Invoke-NestedMenu -InitialPath (直链到 Power Saver)
 Header_NestedMenuBordered     = Invoke-NestedMenu (带边框、定位、AltScreen)
+Header_SettingsMenu           = Invoke-NestedMenu (值列 + 帮助栏)
 Header_MaskedInput            = Read-MaskedInput
 Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput

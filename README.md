@@ -27,6 +27,8 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Read-Measurement`](#read-measurement) - Mixed-unit measurement input driven by `units/<family>.psd1` data files (length, etc.), with live conversion display, built on `Read-Number -BufferParser`
 - [`Invoke-NestedMenu`](#invoke-nestedmenu) - Hierarchical menu for non-paginated, deep-tree navigation
 - [`Write-TuiBox`](#write-tuibox) - The underlying layout engine, also available for standalone use
+- [`Format-TuiColumn`](#format-tuicolumn) - Display-width-aware justify/pad into a fixed-width cell
+- [`Format-TuiWrap`](#format-tuiwrap) - Display-width-aware word wrap with optional hanging indent
 - [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
 - [`Show-Spinner`](#show-spinner) - Run a scriptblock with a live animated spinner
 - [`Write-Spinner`](#write-spinner) - Emit a log line that persists above an active spinner
@@ -606,7 +608,9 @@ $thickness = Read-Measurement -Prompt 'Thickness:' -Family Length -OutputUnit mi
 A hierarchical menu system designed for non-paginated, deep-tree navigation.
 
 **Features:**
-- Accepts a nested array of Objects or Hashtables defining `Label`, `Value`, and `Children`.
+- Accepts a nested array of Objects or Hashtables defining `Label`, `Value`, and `Children`, plus optional `Display`, `HelpTitle`, and `Help` (see [Settings-style menus](#settings-style-menus)).
+- **Aligned value column:** when any item at a tier sets `Display`, labels are padded into a column and each item's current value is shown beside it — display-width-aware, so CJK values stay aligned.
+- **Per-item help band:** when any item at a tier sets `Help`, a fenced help strip appears between the items and the key-hint line, showing the focused item's `HelpTitle` followed by its hanging-indented help text.
 - Deep linking: Dynamically displays breadcrumbs (e.g. `Main Menu > System > Power`) as you drill down.
 - Provides numeric shortcuts. You can rapidly jump to an option by typing its list number (e.g., `1`, `12`).
 - Gracefully handles menus of varying heights by clearing previous artifacts.
@@ -643,6 +647,44 @@ $menuData = @(
 $selection = Invoke-NestedMenu -MenuTree $menuData -Title "Admin Portal" -InitialPath @("System", "Storage")
 ```
 
+#### Settings-style menus
+
+Three optional per-item fields turn a nested menu into a settings screen. All are
+backward-compatible — a tier with none of them renders exactly as before.
+
+- `Display`: the current value shown in the right-hand column. (`Value` remains the
+  return payload; `Display` is purely what the user sees.)
+- `HelpTitle`: a short title shown at the start of the help band.
+- `Help`: help text for the band, hard-capped at 255 characters and wrapped to a few
+  lines with a hanging indent that aligns past the title.
+
+```powershell
+$settings = @(
+    @{ Label = "Theme";     Value = "theme";  Display = "Dark";
+       HelpTitle = "Color scheme"; Help = "Palette used across every widget — borders, highlights, and prompt text all follow it." }
+    @{ Label = "Language";  Value = "lang";   Display = "English";
+       HelpTitle = "UI language";  Help = "Language for the built-in chrome and prompts." }
+    @{ Label = "Telemetry"; Value = "telem";  Display = "Off" }   # no Help: band reserves a blank line so height stays steady
+)
+Invoke-NestedMenu -MenuTree $settings -Title "Preferences" -Border
+```
+
+```
+┌──────────────────────────────────────────────────┐
+│ Preferences                                        │
+├──────────────────────────────────────────────────┤
+│ > [1] Theme       Dark                             │
+│   [2] Language    English                          │
+│   [3] Telemetry   Off                              │
+├──────────────────────────────────────────────────┤
+│ Color scheme  Palette used across every widget —   │
+│               borders, highlights, and prompt text │
+│               all follow it.                       │
+├──────────────────────────────────────────────────┤
+│ ↑↓ Move  → Expand  ← Back  Enter Select  Esc Exit  │
+└──────────────────────────────────────────────────┘
+```
+
 ---
 
 ### `Write-TuiBox`
@@ -659,6 +701,7 @@ The underlying layout engine used by the interactive functions, also available f
 - `-Header`: `[string[]]` lines for the top section.
 - `-Body`: `[string[]]` lines for the main content.
 - `-Footer`: `[string[]]` lines for the bottom section.
+- `-Note`: `[string[]]` lines drawn between the body and footer, fenced by rules on both sides so the section reads as a distinct band (e.g. a help/tooltip strip). Under `-Border` the fences are `├─┤` connectors; under `-SectionRules` they are plain rules; the band's lower fence is shared with the footer's leading rule when a `-Footer` is present.
 - `-Border`: (Switch) Enables box-drawing borders.
 - `-MinWidth` / `-MaxWidth`: Constrains the width of the box.
 - `-X` / `-Y`: Absolute text coordinates for the top-left corner.
@@ -669,6 +712,42 @@ The underlying layout engine used by the interactive functions, also available f
 **Example:**
 ```powershell
 Write-TuiBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
+```
+
+---
+
+### `Format-TuiColumn`
+Justifies and pads a string into a fixed-width display cell — the shared alignment primitive behind `Invoke-NestedMenu`'s value column. Pure function; no host output.
+
+**Parameters:**
+- `-Text`: `[string]` content to fit (may contain inline ANSI).
+- `-Width`: `[int]` target cell width in display columns. `<= 0` returns `''`.
+- `-Justify`: `Left` (default), `Right`, or `Center`.
+- `-PadChar`: Single padding character (default `' '`).
+- `-Ellipsis`: Appended when text is truncated (default `…`).
+
+Measured with the same display-width rules as the rest of the module (East-Asian Wide/Fullwidth = 2 cells, ANSI = 0), so the result is always exactly `-Width` cells; over-width text is truncated on a cell boundary with the ellipsis.
+
+```powershell
+Format-TuiColumn -Text "Theme" -Width 12              # 'Theme       '
+Format-TuiColumn -Text "42"    -Width 6 -Justify Right # '    42'
+```
+
+---
+
+### `Format-TuiWrap`
+Display-width-aware greedy word wrap, returning a `[string[]]` of lines. Words longer than the width are hard-split on a cell boundary; `-HangingIndent` left-pads continuation lines (used for the help band's title-aligned text); `-MaxLines` caps the result, ellipsizing the last kept line.
+
+**Parameters:**
+- `-Text`: `[string]` content to wrap (existing newlines are hard breaks).
+- `-Width`: `[int]` maximum line width in display columns. `<= 0` returns `@()`.
+- `-HangingIndent`: `[int]` cells of left padding applied to lines 2..n (default 0).
+- `-MaxLines`: `[int]` maximum lines returned; `0` = unlimited (default 0).
+
+```powershell
+Format-TuiWrap -Text "The quick brown fox jumps over the lazy dog" -Width 20 -HangingIndent 4
+```
+
 ---
 
 ### `Measure-FuzzyMatch`

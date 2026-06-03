@@ -8,6 +8,7 @@ Menu_Group_AsyncLayout        = Asynchrone et mise en page
 Menu_ToggleRenderMode         = Mode de rendu (actuellement : {0})
 Menu_ChangeLanguage           = Changer la langue (actuellement : {0})
 Menu_ExitDemo                 = Quitter la démo
+Help_About                    = À propos
 
 Menu_Paginated                = Sélection paginée (recherche)
 Menu_PaginatedJump            = Sélection paginée (-InitialIndex saut à #25)
@@ -15,6 +16,7 @@ Menu_MultiSelect              = Multi-sélection paginée (Espace bascule)
 Menu_Nested                   = Menu imbriqué
 Menu_NestedDeep               = Menu imbriqué (-InitialPath lien direct)
 Menu_NestedBordered           = Menu imbriqué (bordé + AltScreen)
+Menu_SettingsMenu             = Menu de réglages (valeurs alignées + aide)
 
 Menu_MaskedInput              = Saisie masquée (téléphone, MAC)
 Menu_PasswordInput            = Mot de passe (SecureString, confirmation, NIP)
@@ -52,6 +54,7 @@ Header_MultiSelect            = Get-PaginatedSelection -MultiSelect
 Header_NestedMenu             = Invoke-NestedMenu
 Header_NestedMenuDeep         = Invoke-NestedMenu -InitialPath (lien direct vers Power Saver)
 Header_NestedMenuBordered     = Invoke-NestedMenu (bordé, positionné, AltScreen)
+Header_SettingsMenu           = Invoke-NestedMenu (colonne de valeurs + bandeau d'aide)
 Header_MaskedInput            = Read-MaskedInput
 Header_Password               = Read-Password
 Header_ValidatedInput         = Read-ValidatedInput

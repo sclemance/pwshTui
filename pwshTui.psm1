@@ -595,6 +595,199 @@ function Get-VisibleSubstring ([string]$s, [int]$maxVisibleLen) {
     return $sb.ToString()
 }
 
+function Format-TuiColumn {
+    <#
+    .SYNOPSIS
+        Justify and pad a string into a fixed-width display cell.
+    .DESCRIPTION
+        Fits $Text into a cell exactly $Width display cells wide, measured the
+        same way the rest of the module measures (East-Asian Wide/Fullwidth =
+        2 cells, ANSI CSI sequences = 0 cells) via Get-DisplayWidth. Shorter
+        text is padded with $PadChar on the side(s) implied by $Justify; longer
+        text is truncated on visible characters (preserving inline ANSI) and the
+        $Ellipsis is appended so the result still measures exactly $Width.
+
+        This is the shared alignment primitive for column layouts — e.g. the
+        value column in Invoke-NestedMenu — so callers don't reimplement
+        width-aware padding. It is a pure function with no host output.
+    .PARAMETER Text
+        The content to fit. May contain inline ANSI styling.
+    .PARAMETER Width
+        Target cell width in display columns. Values <= 0 return ''.
+    .PARAMETER Justify
+        Left (default), Right, or Center.
+    .PARAMETER PadChar
+        Single character used for padding. Default ' '. Assumed 1 cell wide.
+    .PARAMETER Ellipsis
+        Appended when $Text is truncated. Default '…'. Pass '' to hard-cut
+        without a marker. An ellipsis wider than $Width is itself trimmed.
+    .EXAMPLE
+        PS> Format-TuiColumn -Text 'Theme' -Width 12
+        'Theme       '
+    .EXAMPLE
+        PS> Format-TuiColumn -Text '42' -Width 6 -Justify Right
+        '    42'
+    .OUTPUTS
+        [string] exactly $Width display cells wide (or '' when $Width <= 0).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [int]$Width,
+
+        [ValidateSet('Left', 'Right', 'Center')]
+        [string]$Justify = 'Left',
+
+        [string]$PadChar = ' ',
+
+        [string]$Ellipsis = "$([char]0x2026)"
+    )
+
+    if ($Width -le 0) { return '' }
+    if ([string]::IsNullOrEmpty($PadChar)) { $PadChar = ' ' }
+    # Multiplying a [char] doesn't repeat in PowerShell; use a 1-char string.
+    $pc = [string]$PadChar[0]
+
+    $visible = Get-DisplayWidth $Text
+
+    if ($visible -gt $Width) {
+        # Truncate, leaving room for the ellipsis, then reset any open ANSI
+        # styling so trailing padding / borders render clean.
+        $ellWidth = Get-DisplayWidth $Ellipsis
+        if ($ellWidth -ge $Width) {
+            # Ellipsis alone doesn't fit — trim it to width and drop the text.
+            return Get-VisibleSubstring $Ellipsis $Width
+        }
+        $kept = Get-VisibleSubstring $Text ($Width - $ellWidth)
+        $result = "$kept$Ellipsis`e[0m"
+        # The kept slice may land 1 cell short on a wide-char boundary; pad it.
+        $shortfall = $Width - (Get-DisplayWidth $result)
+        if ($shortfall -gt 0) { $result += ($pc * $shortfall) }
+        return $result
+    }
+
+    $pad = $Width - $visible
+    switch ($Justify) {
+        'Right'  { return (($pc * $pad) + $Text) }
+        'Center' {
+            $left  = [int][Math]::Floor($pad / 2)
+            $right = $pad - $left
+            return (($pc * $left) + $Text + ($pc * $right))
+        }
+        default  { return ($Text + ($pc * $pad)) }
+    }
+}
+
+function Format-TuiWrap {
+    <#
+    .SYNOPSIS
+        Display-width-aware greedy word wrap into a list of lines.
+    .DESCRIPTION
+        Wraps $Text to lines no wider than $Width display cells, breaking on
+        whitespace. Words longer than the available width are hard-split on a
+        cell boundary via Get-VisibleSubstring. With -HangingIndent, every line
+        after the first is left-padded by that many spaces, so wrapped text can
+        align past a leading title. -MaxLines caps the number of returned lines;
+        when content remains past the cap, the last kept line is truncated with
+        an ellipsis.
+
+        Width is measured like the rest of the module (CJK = 2 cells, ANSI = 0).
+        Pure function, no host output. Returns @() for empty input.
+    .PARAMETER Text
+        The content to wrap. Existing newlines are treated as hard breaks.
+    .PARAMETER Width
+        Maximum line width in display cells. Values <= 0 return @().
+    .PARAMETER HangingIndent
+        Cells of left padding applied to lines 2..n. Default 0.
+    .PARAMETER MaxLines
+        Maximum lines to return. Default 0 = unlimited.
+    .OUTPUTS
+        [string[]] wrapped lines.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [int]$Width,
+
+        [int]$HangingIndent = 0,
+
+        [int]$MaxLines = 0
+    )
+
+    if ($Width -le 0 -or [string]::IsNullOrEmpty($Text)) { return @() }
+    if ($HangingIndent -lt 0) { $HangingIndent = 0 }
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $indent = ' ' * $HangingIndent
+
+    # Per-line budget: first line gets the full width; continuation lines lose
+    # the hanging indent. Guard against a too-deep indent leaving no room.
+    $contWidth = $Width - $HangingIndent
+    if ($contWidth -lt 1) { $contWidth = 1 }
+
+    foreach ($hardLine in ($Text -split "`r?`n")) {
+        $words = @($hardLine -split '\s+' | Where-Object { $_ -ne '' })
+        if ($words.Count -eq 0) { $lines.Add(''); continue }
+
+        $current = ''
+        foreach ($word in $words) {
+            $isFirst = ($lines.Count -eq 0)
+            $budget  = if ($isFirst) { $Width } else { $contWidth }
+
+            $candidate = if ($current -eq '') { $word } else { "$current $word" }
+            if ((Get-DisplayWidth $candidate) -le $budget) {
+                $current = $candidate
+                continue
+            }
+
+            # Flush the current line if it holds anything.
+            if ($current -ne '') {
+                $lines.Add($(if ($lines.Count -eq 0) { $current } else { "$indent$current" }))
+                $current = ''
+            }
+
+            # The word may still be wider than a whole line — hard-split it.
+            $remaining = $word
+            while ((Get-DisplayWidth $remaining) -gt $budget) {
+                $slice = Get-VisibleSubstring $remaining $budget
+                if ($slice -eq '') { break } # safety against zero progress
+                $lines.Add($(if ($lines.Count -eq 0) { $slice } else { "$indent$slice" }))
+                $remaining = $remaining.Substring($slice.Length)
+                $budget = $contWidth
+            }
+            $current = $remaining
+        }
+        if ($current -ne '') {
+            $lines.Add($(if ($lines.Count -eq 0) { $current } else { "$indent$current" }))
+        }
+    }
+
+    # Clamp to MaxLines, ellipsizing the final kept line so the truncation is
+    # visible. The last kept line already fits its budget; strip the hanging
+    # indent, trim to leave room for the ellipsis, then re-add the indent.
+    if ($MaxLines -gt 0 -and $lines.Count -gt $MaxLines) {
+        $kept = [string[]]($lines[0..($MaxLines - 1)])
+        $isFirstLine = ($MaxLines -eq 1)
+        $budget = if ($isFirstLine) { $Width } else { $contWidth }
+        $body = if ($isFirstLine) { $kept[-1] } else { $kept[-1].Substring([Math]::Min($HangingIndent, $kept[-1].Length)) }
+        $trimmed = (Get-VisibleSubstring $body ([Math]::Max(1, $budget - 1))).TrimEnd() + "$([char]0x2026)"
+        $kept[-1] = if ($isFirstLine) { $trimmed } else { "$indent$trimmed" }
+        return $kept
+    }
+
+    return $lines.ToArray()
+}
+
 function Write-TuiBox {
     <#
     .SYNOPSIS
@@ -611,6 +804,12 @@ function Write-TuiBox {
         Required. The main content lines.
     .PARAMETER Footer
         Lines drawn below the body. Separated from body by a rule if Border.
+    .PARAMETER Note
+        Optional lines drawn between the body and the footer, fenced by rules
+        on both sides so the section reads as a distinct band (e.g. a help /
+        tooltip strip). Under -Border the rules are tee connectors; under
+        -SectionRules they are plain rules. The band's lower fence is shared
+        with the footer's leading rule when a Footer is present.
     .PARAMETER Border
         Wrap the content in a Unicode box.
     .PARAMETER MinWidth
@@ -648,6 +847,7 @@ function Write-TuiBox {
         [Parameter(Mandatory = $true)]
         [string[]]$Body,
         [string[]]$Footer,
+        [string[]]$Note,
         [switch]$Border,
         [int]$MinWidth = 0,
         [int]$MaxWidth = 0,
@@ -662,9 +862,15 @@ function Write-TuiBox {
     $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
     $g = Get-Glyphs $asciiOn
 
+    # A Note of @('') (a single blank line, used to reserve a band's height) is
+    # falsy under `if ($Note)` because PowerShell unwraps the one-element array
+    # to [bool]''. Test element count instead so an explicit blank band renders.
+    $hasNote = ($null -ne $Note -and $Note.Count -gt 0)
+
     $allLines = @()
     if ($Header) { $allLines += $Header }
     $allLines += $Body
+    if ($hasNote) { $allLines += $Note }
     if ($Footer) { $allLines += $Footer }
 
     # Calculate required width. Measured in display cells, so CJK content
@@ -717,6 +923,17 @@ function Write-TuiBox {
     }
 
     & $addSectionLines $Body
+
+    if ($hasNote) {
+        if ($Border) { $frame.Add("$($g.BorderTeeL)$horiz$($g.BorderTeeR)") }
+        elseif ($SectionRules) { $frame.Add($plainRule) }
+        & $addSectionLines $Note
+        # Close the band when no Footer follows to provide its lower fence.
+        if (-not $Footer) {
+            if ($Border) { $frame.Add("$($g.BorderTeeL)$horiz$($g.BorderTeeR)") }
+            elseif ($SectionRules) { $frame.Add($plainRule) }
+        }
+    }
 
     if ($Footer) {
         if ($Border) { $frame.Add("$($g.BorderTeeL)$horiz$($g.BorderTeeR)") }
@@ -3524,15 +3741,31 @@ function Invoke-NestedMenu {
     $g = Get-Glyphs $asciiOn
 
     # Helper to recursively normalize items
+    # Help text is hard-capped so a runaway string can't blow out the band.
+    $helpCap = 255
+    $clampHelp = {
+        param($text)
+        if ([string]::IsNullOrEmpty($text)) { return $null }
+        $t = [string]$text
+        if ($t.Length -gt $helpCap) { $t = $t.Substring(0, $helpCap - 1) + "$([char]0x2026)" }
+        return $t
+    }
+
     function ConvertTo-MenuItem ($Item) {
         $obj = [PSCustomObject]@{
             Label = $null
             Value = $null
             Children = $null
+            Display = $null
+            HelpTitle = $null
+            Help = $null
         }
         if ($Item -is [hashtable] -or $Item -is [System.Collections.IDictionary]) {
             if ($Item.ContainsKey('Label')) { $obj.Label = $Item.Label }
             if ($Item.ContainsKey('Value')) { $obj.Value = $Item.Value }
+            if ($Item.ContainsKey('Display')) { $obj.Display = $Item.Display }
+            if ($Item.ContainsKey('HelpTitle')) { $obj.HelpTitle = $Item.HelpTitle }
+            if ($Item.ContainsKey('Help')) { $obj.Help = & $clampHelp $Item.Help }
             if ($Item.ContainsKey('Children')) {
                 $obj.Children = @()
                 foreach ($child in $Item.Children) {
@@ -3542,6 +3775,9 @@ function Invoke-NestedMenu {
         } else {
             if ($null -ne $Item.Label) { $obj.Label = $Item.Label } else { $obj.Label = $Item.ToString() }
             if ($null -ne $Item.Value) { $obj.Value = $Item.Value } else { $obj.Value = $Item }
+            if ($null -ne $Item.Display) { $obj.Display = $Item.Display }
+            if ($null -ne $Item.HelpTitle) { $obj.HelpTitle = $Item.HelpTitle }
+            if ($null -ne $Item.Help) { $obj.Help = & $clampHelp $Item.Help }
             if ($null -ne $Item.Children) {
                 $obj.Children = @()
                 foreach ($child in $Item.Children) {
@@ -3642,13 +3878,35 @@ function Invoke-NestedMenu {
             $emptyPointer = "  "
             $body = @()
 
+            # An optional value column and help band only engage when items at
+            # this level opt in via Display / Help. Plain menus take neither
+            # branch and render exactly as before.
+            $levelHasDisplay = $false
+            $levelHasHelp    = $false
+            $labelColWidth   = 0
+            for ($i = 0; $i -lt $currentItems.Count; $i++) {
+                $it = $currentItems[$i]
+                if (-not [string]::IsNullOrEmpty($it.Display)) { $levelHasDisplay = $true }
+                if (-not [string]::IsNullOrEmpty($it.Help))    { $levelHasHelp = $true }
+                $sfx = if ($null -ne $it.Children -and $it.Children.Count -gt 0) { " $($g.ChildIndicator)" } else { "" }
+                $w = Get-DisplayWidth "[$($i + 1)] $($it.Label)$sfx"
+                if ($w -gt $labelColWidth) { $labelColWidth = $w }
+            }
+
             for ($i = 0; $i -lt $currentItems.Count; $i++) {
                 $item = $currentItems[$i]
                 $isRowSelected = ($i -eq $selectedIndex)
                 $displayNum = $i + 1
 
                 $suffix = if ($null -ne $item.Children -and $item.Children.Count -gt 0) { " $($g.ChildIndicator)" } else { "" }
-                $displayText = "[$displayNum] $($item.Label)$suffix"
+
+                if ($levelHasDisplay) {
+                    # Align labels into a column, then the current-value column.
+                    $labelCell = Format-TuiColumn -Text "[$displayNum] $($item.Label)$suffix" -Width $labelColWidth
+                    $displayText = if (-not [string]::IsNullOrEmpty($item.Display)) { "$labelCell  $($item.Display)" } else { $labelCell }
+                } else {
+                    $displayText = "[$displayNum] $($item.Label)$suffix"
+                }
 
                 if ($isRowSelected) {
                     if ($noColorOn) {
@@ -3665,8 +3923,54 @@ function Invoke-NestedMenu {
             $s = $script:_Strings
             $footer = @("$($g.ArrowsUpDown) $($s.Footer_Move)   $($g.ArrowRight) $($s.Footer_Expand)   $($g.ArrowLeft) $($s.Footer_Back)   Enter=$($s.Footer_Select)   Esc=$($s.Footer_Exit)")
 
+            # Help band: rendered as a fenced Note section between body and
+            # footer, but only when some item at this level carries Help. The
+            # focused item's HelpTitle leads, with its Help text wrapped and
+            # hanging-indented to align past the title.
+            $note = $null
+            if ($levelHasHelp) {
+                # Match the inner width Write-TuiBox will settle on, computed
+                # from the non-help lines so help never widens the box.
+                $winW = 80
+                try { if ([Console]::WindowWidth -gt 0) { $winW = [Console]::WindowWidth } } catch {}
+                $limit = ($MaxWidth -gt 0) ? [Math]::Min($MaxWidth, $winW) : $winW
+                $borderOff = $Border ? 4 : 0
+                $maxNonNote = $MinWidth
+                foreach ($l in (@($header) + $body + $footer)) {
+                    $lw = Get-DisplayWidth $l
+                    if ($lw -gt $maxNonNote) { $maxNonNote = $lw }
+                }
+                $wrapWidth = [Math]::Max(1, [Math]::Min($maxNonNote, $limit - $borderOff))
+
+                $focused = $currentItems[$selectedIndex]
+                if (-not [string]::IsNullOrEmpty($focused.Help)) {
+                    $title = if (-not [string]::IsNullOrEmpty($focused.HelpTitle)) { [string]$focused.HelpTitle } else { '' }
+                    $hang = (Get-DisplayWidth $title) + 2
+                    $textWidth = $wrapWidth - $hang
+                    if ($textWidth -lt 10) {
+                        # Title too wide for a hanging layout: title on its own
+                        # line, help wrapped beneath at a shallow indent.
+                        $note = @(Format-TuiColumn -Text $title -Width $wrapWidth)
+                        $note += @(Format-TuiWrap -Text $focused.Help -Width ([Math]::Max(1, $wrapWidth - 2)) -MaxLines 3 |
+                                   ForEach-Object { "  $_" })
+                    } else {
+                        $wrapped = @(Format-TuiWrap -Text $focused.Help -Width $textWidth -MaxLines 3)
+                        $indent = ' ' * $hang
+                        $note = @()
+                        for ($k = 0; $k -lt $wrapped.Count; $k++) {
+                            if ($k -eq 0) { $note += "$title  $($wrapped[0])" }
+                            else { $note += "$indent$($wrapped[$k])" }
+                        }
+                    }
+                } else {
+                    # Level has help but this item doesn't — keep the fenced
+                    # band present (blank body) so its structure doesn't flicker.
+                    $note = @('')
+                }
+            }
+
             # Draw using UIBox
-            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer `
+            $newHeight = Write-TuiBox -Header $header -Body $body -Footer $footer -Note $note `
                                       -Border:$Border -MinWidth $MinWidth -MaxWidth $MaxWidth -X $X -Y $Y `
                                       -SectionRules -Ascii:$asciiOn -PassThru
 
@@ -5602,4 +5906,4 @@ function Read-Measurement {
     return ConvertFrom-MeasurementBase -BaseValue ([decimal]$baseResult) -Family $fam -UnitName $OutputUnit
 }
 
-Export-ModuleMember -Function Write-TuiBox, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily
+Export-ModuleMember -Function Write-TuiBox, Format-TuiColumn, Format-TuiWrap, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily

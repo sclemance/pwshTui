@@ -63,4 +63,38 @@ Describe 'Write-TuiBox' {
             $count | Should -Be 3
         }
     }
+
+    Context 'Note section' {
+        It 'fences the note with rules between body and footer (SectionRules)' {
+            # body3 + rule + note2 + rule + footer1
+            $count = Write-TuiBox -Body @('b1','b2','b3') -Note @('n1','n2') -Footer @('f') `
+                                  -SectionRules -PassThru 6>$null
+            $count | Should -Be 8
+        }
+        It 'adds no rules for a note without SectionRules or Border' {
+            # body1 + note1 + footer1
+            $count = Write-TuiBox -Body @('b') -Note @('n') -Footer @('f') -PassThru 6>$null
+            $count | Should -Be 3
+        }
+        It 'uses tee connectors around the note under Border' {
+            # top + body + tee + note + tee + footer + bottom
+            $count = Write-TuiBox -Body @('b') -Note @('n') -Footer @('f') -Border -PassThru 6>$null
+            $count | Should -Be 7
+        }
+        It 'closes the note band with its own lower rule when no footer follows' {
+            # body1 + rule + note1 + rule
+            $count = Write-TuiBox -Body @('b') -Note @('n') -SectionRules -PassThru 6>$null
+            $count | Should -Be 4
+        }
+        It 'ignores an empty note' {
+            $count = Write-TuiBox -Body @('b') -Note @() -Footer @('f') -SectionRules -PassThru 6>$null
+            $count | Should -Be 3  # body + rule + footer, no note band
+        }
+        It 'renders a single blank-line note (reserved band) rather than dropping it' {
+            # @('') is falsy under `if ($Note)`; the band must still render so a
+            # reserved (blank) help band keeps its rules. body + rule + note + rule + footer
+            $count = Write-TuiBox -Body @('b') -Note @('') -Footer @('f') -SectionRules -PassThru 6>$null
+            $count | Should -Be 5
+        }
+    }
 }
