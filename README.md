@@ -32,6 +32,7 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
 - [`Show-Spinner`](#show-spinner) - Run a scriptblock with a live animated spinner
 - [`Write-Spinner`](#write-spinner) - Emit a log line that persists above an active spinner
+- [`Set-SpinnerActivity`](#set-spinneractivity) - Update a running spinner's label in place (live progress)
 
 ---
 
@@ -841,6 +842,31 @@ Show-Spinner -Activity "Indexing" -ShowTimer -ScriptBlock {
 }
 # Each "Indexed ..." line scrolls above the spinning glyph and is preserved
 # in scrollback when the spinner finishes.
+```
+
+---
+
+### `Set-SpinnerActivity`
+Update the activity text of the currently running `Show-Spinner` in place. Where `-Activity` is fixed for the spinner's lifetime, this lets a long `-ScriptBlock` rewrite the label as it progresses — a live counter or status on the single spinner line.
+
+**Features:**
+- **Live label:** the ticker re-reads the text every frame, so the next frame shows the new label. Any `-ShowTimer` suffix continues to render after it.
+- **Never looks hung:** the glyph animates on its own background ticker independent of the foreground work, so even while a slow step blocks, the line keeps spinning (and the timer keeps counting). Use this to also name the current step so a long stall is legible (e.g. `... (resolving assets for Acme)`).
+- **Complements `Write-Spinner`:** `Write-Spinner` scrolls persistent lines *above* the spinner; `Set-SpinnerActivity` rewrites the single live line.
+- **Drop-in safe:** outside an active VT spinner it's a silent no-op, so progress updates never spam a redirected log in automation (where the spinner already degraded to plain start/done lines).
+
+**Parameters:**
+- `-Activity`: (Required) The new text to show after the glyph.
+
+**Example:**
+```powershell
+Show-Spinner -Activity "Syncing assets" -ShowTimer -ScriptBlock {
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        Set-SpinnerActivity "Syncing assets ($($i + 1) of $($items.Count))"
+        Sync-Item $items[$i]
+    }
+}
+# The single spinner line counts up in place: "Syncing assets (63 of 120) (12.4s)"
 ```
 
 ## Global Layout Parameters

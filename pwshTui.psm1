@@ -24,6 +24,11 @@ $script:_NoColor   = [bool]$env:NO_COLOR
 # the foreground scriptblock and the background ticker runspace.
 $script:_SpinnerActive = $false
 $script:_SpinnerBuffer = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+# Live spinner label, mutable while the spinner runs. A synchronized hashtable so
+# the foreground (Set-SpinnerActivity) and the background ticker runspace share one
+# object; the ticker reads .Text each frame. A hashtable rather than a bare string
+# leaves room to carry structured progress data later without another shared slot.
+$script:_SpinnerActivity = [hashtable]::Synchronized(@{ Text = '' })
 
 # ConsoleColor -> SGR foreground code. Write-Spinner pre-wraps the message
 # with the matching ANSI escape before enqueueing so the ticker — which
@@ -3391,6 +3396,10 @@ function Show-Spinner {
     $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
     if ($asciiOn) { $Style = 'Ascii' }
 
+    # Seed the live-updatable label holder; Set-SpinnerActivity mutates it while
+    # the spinner runs so callers can show progress ("(item 63 of 120)") in place.
+    $script:_SpinnerActivity.Text = $Activity
+
     # Non-VT fallback (Azure Automation, ISE, redirected output): no animation,
     # just bracket the work with plain log lines. Elapsed always included on
     # the "done" line — cheap to capture and far more useful in logs than at
@@ -3458,7 +3467,7 @@ function Show-Spinner {
     $tickerStopwatch = if ($ShowTimer) { $stopwatch } else { $null }
     $tickPS = [powershell]::Create()
     [void]$tickPS.AddScript({
-        param($frames, $intervalMs, $activity, $stop, $useColor, $sw, $buffer)
+        param($frames, $intervalMs, $activityRef, $stop, $useColor, $sw, $buffer)
         $i = 0
         while (-not $stop.IsSet) {
             # Drain pending log lines from Write-Spinner: clear the
@@ -3470,6 +3479,10 @@ function Show-Spinner {
                 [Console]::Write("`r`e[K$msg`n")
             }
             $glyph = $frames[$i % $frames.Count]
+            # Re-read the label every frame so Set-SpinnerActivity updates appear
+            # live. The glyph keeps animating regardless of the label or of the
+            # foreground blocking, so a long step never looks frozen.
+            $activity = [string]$activityRef.Text
             $suffix = ''
             if ($null -ne $sw) {
                 $t = $sw.Elapsed
@@ -3500,7 +3513,7 @@ function Show-Spinner {
     })
     [void]$tickPS.AddArgument($config.Frames)
     [void]$tickPS.AddArgument($config.Ms)
-    [void]$tickPS.AddArgument($Activity)
+    [void]$tickPS.AddArgument($script:_SpinnerActivity)
     [void]$tickPS.AddArgument($stopSignal)
     [void]$tickPS.AddArgument(-not $noColorOn)
     [void]$tickPS.AddArgument($tickerStopwatch)
@@ -3601,6 +3614,48 @@ function Write-Spinner {
             Write-Host $Message
         }
     }
+}
+
+function Set-SpinnerActivity {
+    <#
+    .SYNOPSIS
+        Update the activity text of the currently running Show-Spinner in place.
+    .DESCRIPTION
+        Show-Spinner's -Activity is normally fixed for the life of the spinner.
+        Set-SpinnerActivity lets a long-running -ScriptBlock rewrite that label as
+        it makes progress - e.g. "Syncing assets (63 of 120)" - and the change
+        appears on the next animation frame. The glyph keeps spinning on its own
+        background ticker, so even while the foreground blocks on a slow step the
+        line stays alive; this just keeps the text current.
+
+        Complements Write-Spinner: Write-Spinner emits lines that scroll up and
+        persist above the spinner; Set-SpinnerActivity rewrites the single live
+        line. Any -ShowTimer suffix continues to render after the new text.
+
+        Outside an active VT spinner the call is a silent no-op, so progress
+        updates never spam a redirected log in automation - the spinner there
+        already degraded to plain start/done lines.
+    .PARAMETER Activity
+        The new activity text to display after the spinner glyph.
+    .EXAMPLE
+        PS> Show-Spinner -Activity "Syncing assets" -ShowTimer -ScriptBlock {
+                for ($i = 0; $i -lt $items.Count; $i++) {
+                    Set-SpinnerActivity "Syncing assets ($($i + 1) of $($items.Count))"
+                    Sync-Item $items[$i]
+                }
+            }
+        The single spinner line counts up in place while the work runs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Activity
+    )
+    # Mutate the shared holder the ticker reads each frame. Harmless when no
+    # spinner is running (the next Show-Spinner reseeds it) and invisible in
+    # non-VT contexts (the ticker that reads it never started).
+    $script:_SpinnerActivity.Text = $Activity
 }
 
 function Invoke-NestedMenu {
@@ -5785,4 +5840,4 @@ function Read-Measurement {
     return ConvertFrom-MeasurementBase -BaseValue ([decimal]$baseResult) -Family $fam -UnitName $OutputUnit
 }
 
-Export-ModuleMember -Function Write-TuiBox, Format-TuiColumn, Format-TuiWrap, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily
+Export-ModuleMember -Function Write-TuiBox, Format-TuiColumn, Format-TuiWrap, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Set-SpinnerActivity, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily
