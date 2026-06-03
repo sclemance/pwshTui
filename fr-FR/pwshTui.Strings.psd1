@@ -21,4 +21,7 @@ Status_NoMatches = (Aucun résultat)
 Status_NoItems   = Aucun élément à sélectionner.
 Status_Cancelled = (annulé)
 Status_DoneIn    = terminé en
+Notice_PasteControlChars = Le contenu collé contient des caractères de contrôle ; rejeté.
+Notice_PasteRejected     = Collage rejeté ({0}).
+Notice_PasswordMismatch  = Les mots de passe ne correspondent pas. Réessayez.
 '@

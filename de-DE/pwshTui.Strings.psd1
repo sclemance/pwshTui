@@ -21,4 +21,7 @@ Status_NoMatches = (Keine Treffer)
 Status_NoItems   = Keine Elemente zur Auswahl.
 Status_Cancelled = (abgebrochen)
 Status_DoneIn    = fertig in
+Notice_PasteControlChars = Eingefügter Inhalt enthält Steuerzeichen; abgelehnt.
+Notice_PasteRejected     = Einfügen abgelehnt ({0}).
+Notice_PasswordMismatch  = Passwörter stimmen nicht überein. Bitte erneut versuchen.
 '@

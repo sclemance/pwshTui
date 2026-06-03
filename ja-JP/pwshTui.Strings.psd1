@@ -20,4 +20,7 @@ Status_NoMatches = (該当なし)
 Status_NoItems   = 選択する項目がありません。
 Status_Cancelled = (キャンセル)
 Status_DoneIn    = 完了:
+Notice_PasteControlChars = 貼り付けた内容に制御文字が含まれています。拒否しました。
+Notice_PasteRejected     = 貼り付けを拒否しました ({0})。
+Notice_PasswordMismatch  = パスワードが一致しません。もう一度お試しください。
 '@

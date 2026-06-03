@@ -21,4 +21,7 @@ Status_NoMatches = (Sin resultados)
 Status_NoItems   = No hay elementos para seleccionar.
 Status_Cancelled = (cancelado)
 Status_DoneIn    = completado en
+Notice_PasteControlChars = El contenido pegado contiene caracteres de control; rechazado.
+Notice_PasteRejected     = Pegado rechazado ({0}).
+Notice_PasswordMismatch  = Las contraseñas no coinciden. Inténtalo de nuevo.
 '@

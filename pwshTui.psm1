@@ -165,6 +165,9 @@ $script:_Strings = @{
     Status_NoItems   = 'No items to select.'
     Status_Cancelled = '(cancelled)'
     Status_DoneIn    = 'done in'
+    Notice_PasteControlChars = 'Pasted content contains control characters; rejected.'
+    Notice_PasteRejected     = 'Paste rejected ({0}).'
+    Notice_PasswordMismatch  = 'Passwords did not match. Try again.'
 }
 try {
     $loaded = $null
@@ -190,6 +193,24 @@ function Assert-InteractiveHost {
     if (-not $script:_SupportsVT) {
         throw "$FunctionName requires a host with virtual-terminal support. Current host '$($Host.Name)' does not — likely Azure Automation, Windows PowerShell ISE, or redirected output. Run from an interactive console session (pwsh, Windows Terminal, VS Code integrated terminal, etc.)."
     }
+}
+
+function Write-Notice {
+    # Emit a one-line transient notice over the current line (carriage-return +
+    # clear-to-EOL), prefixed with a consistent `[!] ` marker, then newline so a
+    # subsequent re-prompt lands cleanly below. Centralizes the colour decision
+    # (red, or plain when NoColor) that every in-loop rejection used to re-guard
+    # by hand, and gives those rejections a single voice. Callers pass their
+    # already-resolved NoColor state via -NoColor so an explicit per-call
+    # `-NoColor` switch is honoured, not just the module default.
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Message,
+        [switch]$NoColor
+    )
+    $noColorOn = if ($PSBoundParameters.ContainsKey('NoColor')) { [bool]$NoColor } else { $script:_NoColor }
+    $line = "`r`e[K[!] $Message"
+    if ($noColorOn) { Write-Host $line }
+    else { Write-Host $line -ForegroundColor Red }
 }
 
 function Read-KeyOrPaste {
@@ -1649,11 +1670,7 @@ function Read-MaskedInput {
                 # control character in the body. Same logic as Read-Password
                 # — silent partial application is worse than a visible reject.
                 if ($evt.HasControlChars) {
-                    if ($noColorOn) {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
-                    } else {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
-                    }
+                    Write-Notice $script:_Strings.Notice_PasteControlChars -NoColor:$noColorOn
                 } else {
                     # Apply each pasted char through the same per-slot
                     # validation pipeline as typed input. Chars that don't
@@ -2031,11 +2048,7 @@ function Read-Password {
                     # they pasted, and with -Confirm an identical mangling on
                     # both pastes would even validate — the worst failure.
                     if ($evt.HasControlChars) {
-                        if ($noColorOn) {
-                            Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
-                        } else {
-                            Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
-                        }
+                        Write-Notice $script:_Strings.Notice_PasteControlChars -NoColor:$noColorOn
                     } else {
                         foreach ($pc in $evt.Text.GetEnumerator()) {
                             if ($MaxLength -eq 0 -or $sec.Length -lt $MaxLength) {
@@ -2156,11 +2169,7 @@ function Read-Password {
             }
             $second.Dispose()
             $attempt++
-            if ($noColorOn) {
-                Write-Host "Passwords did not match. Try again."
-            } else {
-                Write-Host "Passwords did not match. Try again." -ForegroundColor Red
-            }
+            Write-Notice $script:_Strings.Notice_PasswordMismatch -NoColor:$noColorOn
             if ($attempt -ge $MaxAttempts) {
                 $first.Dispose()
                 return $null
@@ -2312,11 +2321,7 @@ function Read-ValidatedInput {
                 # control character in the body. Same rule as Read-Password /
                 # Read-MaskedInput — fail visibly rather than silently mangle.
                 if ($evt.HasControlChars) {
-                    if ($noColorOn) {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
-                    } else {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
-                    }
+                    Write-Notice $script:_Strings.Notice_PasteControlChars -NoColor:$noColorOn
                 } else {
                     foreach ($pc in $evt.Text.GetEnumerator()) {
                         $rawInput.Insert($cursor, $pc)
@@ -2851,11 +2856,7 @@ function Read-Number {
 
             if ($evt.Kind -eq 'Paste') {
                 if ($evt.HasControlChars) {
-                    if ($noColorOn) {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected."
-                    } else {
-                        Write-Host "`r`e[K[!] Pasted content contains control characters; rejected." -ForegroundColor Red
-                    }
+                    Write-Notice $script:_Strings.Notice_PasteControlChars -NoColor:$noColorOn
                 } else {
                     $pasteParse = if ($BufferParser) {
                         & $BufferParser $evt.Text
@@ -2878,11 +2879,7 @@ function Read-Number {
                         $lastValidValue = $pasteParse.Value
                         if ($evt.TrailingNewline) { $running = $false }
                     } else {
-                        if ($noColorOn) {
-                            Write-Host "`r`e[K[!] Paste rejected ($($pasteParse.Reason))."
-                        } else {
-                            Write-Host "`r`e[K[!] Paste rejected ($($pasteParse.Reason))." -ForegroundColor Red
-                        }
+                        Write-Notice ($script:_Strings.Notice_PasteRejected -f $pasteParse.Reason) -NoColor:$noColorOn
                     }
                 }
                 $lastArrowDir = 0

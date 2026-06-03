@@ -21,4 +21,7 @@ Status_NoMatches = (无匹配)
 Status_NoItems   = 无可选项目。
 Status_Cancelled = (已取消)
 Status_DoneIn    = 完成:
+Notice_PasteControlChars = 粘贴的内容包含控制字符；已拒绝。
+Notice_PasteRejected     = 粘贴被拒绝 ({0})。
+Notice_PasswordMismatch  = 密码不匹配。请重试。
 '@

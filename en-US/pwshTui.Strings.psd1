@@ -23,4 +23,7 @@ Status_NoMatches = (No matches found)
 Status_NoItems   = No items to select.
 Status_Cancelled = (cancelled)
 Status_DoneIn    = done in
+Notice_PasteControlChars = Pasted content contains control characters; rejected.
+Notice_PasteRejected     = Paste rejected ({0}).
+Notice_PasswordMismatch  = Passwords did not match. Try again.
 '@
