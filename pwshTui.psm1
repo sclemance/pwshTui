@@ -213,6 +213,52 @@ function Write-Notice {
     else { Write-Host $line -ForegroundColor Red }
 }
 
+function Enter-RawConsole {
+    # Put the console into the raw mode every interactive widget needs, and
+    # return a state token to hand back to Exit-RawConsole in a finally block.
+    # Centralizes the setup that was hand-rolled in each function:
+    #   - probe + remember whether the real cursor was visible, then hide it
+    #   - route Ctrl+C to input so it arrives as a keystroke (caught and
+    #     unwound immediately, instead of waiting for the next ReadKey)
+    #   - optionally enable bracketed paste and/or the alternate screen buffer
+    # Exit-RawConsole reverses exactly what was changed, so teardown can never
+    # drift out of sync with setup.
+    param([switch]$BracketedPaste, [switch]$AltScreen)
+
+    $cursorVisible = $true
+    try {
+        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) { $cursorVisible = $false }
+    } catch {}
+
+    Write-Host "`e[?25l" -NoNewline                            # hide real cursor
+    if ($AltScreen)      { Write-Host "`e[?1049h" -NoNewline } # alternate screen
+    if ($BracketedPaste) { Write-Host "`e[?2004h" -NoNewline } # bracketed paste
+
+    $origCtrlC = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+
+    return [PSCustomObject]@{
+        OrigCtrlC      = $origCtrlC
+        CursorVisible  = $cursorVisible
+        AltScreen      = [bool]$AltScreen
+        BracketedPaste = [bool]$BracketedPaste
+    }
+}
+
+function Exit-RawConsole {
+    # Reverse Enter-RawConsole using its returned state token; call from finally.
+    # Disable paste / alt-screen first (mirroring the order the call sites used),
+    # re-show the cursor only if it was visible going in, then restore the user's
+    # session-wide Ctrl+C behavior. Idempotent enough to be safe in a finally
+    # even if setup partially failed.
+    param([Parameter(Mandatory, Position = 0)]$State)
+    if ($null -eq $State) { return }
+    if ($State.BracketedPaste) { Write-Host "`e[?2004l" -NoNewline }
+    if ($State.AltScreen)      { Write-Host "`e[?1049l" -NoNewline }
+    if ($State.CursorVisible)  { Write-Host "`e[?25h" -NoNewline }
+    [Console]::TreatControlCAsInput = $State.OrigCtrlC
+}
+
 function Read-KeyOrPaste {
     # Internal: read one input event, transparently consuming bracketed-paste
     # sequences. Returns a PSCustomObject:
@@ -1210,23 +1256,7 @@ function Get-PaginatedSelection {
     $running = $true
     $result = $null
 
-    # Track original cursor state so we can restore it accurately
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    # Hide cursor using ANSI
-    Write-Host "`e[?25l" -NoNewline
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
-
-    # Capture Ctrl+C as a regular key so the function can react immediately
-    # instead of waiting for the next keystroke to unblock ReadKey. Restored
-    # in finally so the user's session-wide Ctrl+C behavior is unchanged.
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -AltScreen:$AltScreen
 
     try {
         $firstRender = $true
@@ -1489,13 +1519,7 @@ function Get-PaginatedSelection {
         # Clear the menu area
         Write-Host "`e[J" -NoNewline
 
-        # Restore cursor to its original state
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
 
         # If cancelled or aborted, ensure the next prompt starts on a clean line
         if ($null -eq $result) {
@@ -1582,14 +1606,6 @@ function Read-MaskedInput {
     $cursor = 0
     $running = $true
 
-    # Track original cursor state
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
     $checkValid = {
         param([System.Collections.Generic.List[char]]$chars)
         for ($i = 0; $i -lt $chars.Count; $i++) {
@@ -1605,13 +1621,7 @@ function Read-MaskedInput {
         return $true
     }
     
-    Write-Host "`e[?25l" -NoNewline # Hide real cursor
-    # Enable bracketed paste so we can validate pasted content as a unit
-    # instead of letting embedded newlines mid-paste commit the buffer.
-    Write-Host "`e[?2004h" -NoNewline
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -BracketedPaste
 
     try {
         while ($running) {
@@ -1763,13 +1773,7 @@ function Read-MaskedInput {
         # Final Draw to remove highlight
         Write-Host "`r$Prompt $displayStr`e[K"
     } finally {
-        Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
-        # Restore cursor to its original state
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
 
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
@@ -1981,25 +1985,11 @@ function Read-Password {
         $running = $true
         $cancelled = $false
 
-        $originalCursorVisible = $true
-        try {
-            if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-                $originalCursorVisible = $false
-            }
-        } catch {}
-
-        Write-Host "`e[?25l" -NoNewline # Hide real cursor
-        # Enable bracketed paste so the terminal wraps pasted content in
-        # ESC[200~ ... ESC[201~ sentinels. This lets us detect paste vs.
-        # typed input and validate the content as a unit — critical here
-        # because silent corruption of a pasted password (e.g. embedded
-        # newline truncating the buffer) would mismatch -Confirm in a way
-        # that *succeeds* if both pastes are mangled identically, locking
-        # the user out of whatever they just provisioned.
-        Write-Host "`e[?2004h" -NoNewline
-
-        $origCtrlC = [Console]::TreatControlCAsInput
-        [Console]::TreatControlCAsInput = $true
+        # Bracketed paste matters especially here: silent corruption of a pasted
+        # password (e.g. an embedded newline truncating the buffer) would mismatch
+        # -Confirm in a way that *succeeds* if both pastes are mangled identically,
+        # locking the user out of whatever they just provisioned.
+        $raw = Enter-RawConsole -BracketedPaste
 
         try {
             while ($running) {
@@ -2102,11 +2092,7 @@ function Read-Password {
             $finalDisplay = if ($HideTyping) { '' } else { [string]::new([char]$MaskChar, $sec.Length) }
             Write-Host "`r$label $finalDisplay`e[K"
         } finally {
-            Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
-            if ($originalCursorVisible) {
-                Write-Host "`e[?25h" -NoNewline
-            }
-            [Console]::TreatControlCAsInput = $origCtrlC
+            Exit-RawConsole $raw
             Write-Host ""
         }
 
@@ -2242,21 +2228,7 @@ function Read-ValidatedInput {
     $cursor = 0
     $running = $true
 
-    # Track original cursor state
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    Write-Host "`e[?25l" -NoNewline # Hide real cursor
-    # Enable bracketed paste so pasted content is delivered as one validated
-    # unit instead of streaming through the per-char Enter handler.
-    Write-Host "`e[?2004h" -NoNewline
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -BracketedPaste
 
     try {
         while ($running) {
@@ -2376,13 +2348,7 @@ function Read-ValidatedInput {
         $finalStr = -join $rawInput
         Write-Host "`r$Prompt $finalStr`e[K"
     } finally {
-        Write-Host "`e[?2004l" -NoNewline # Disable bracketed paste
-        # Restore cursor to its original state
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
 
         # Ensure the terminal prompt drops to a clean line on exit
         Write-Host ""
@@ -2773,18 +2739,7 @@ function Read-Number {
     $holdStartTime = [DateTime]::MinValue
     $holdGapMs = 80.0
 
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    Write-Host "`e[?25l" -NoNewline
-    Write-Host "`e[?2004h" -NoNewline
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -BracketedPaste
 
     $running = $true
     $cancelled = $false
@@ -3044,11 +2999,7 @@ function Read-Number {
         }
         Write-Host "`r$Prompt $finalDeco$Prefix$finalStr$Suffix`e[K"
     } finally {
-        Write-Host "`e[?2004l" -NoNewline
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
         Write-Host ""
     }
 
@@ -3098,18 +3049,7 @@ function Read-Confirmation {
     $running = $true
     $result = $null
 
-    # Track original cursor state
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    Write-Host "`e[?25l" -NoNewline # Hide real cursor
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole
 
     try {
         while ($running) {
@@ -3153,10 +3093,7 @@ function Read-Confirmation {
         $finalText = if ($result -eq $true) { 'Yes' } elseif ($result -eq $false) { 'No' } else { $script:_Strings.Status_Cancelled }
         Write-Host "`r$Question $finalText`e[K"
     } finally {
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
         Write-Host ""
     }
 
@@ -3256,17 +3193,7 @@ function Read-Choice {
     # through the pipeline, which makes it unusable for direct -join.
     $selLabels = @()
 
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    Write-Host "`e[?25l" -NoNewline # Hide real cursor
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole
 
     try {
         while ($running) {
@@ -3366,10 +3293,7 @@ function Read-Choice {
         }
         Write-Host "`r$Question $echo`e[K"
     } finally {
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
         Write-Host ""
     }
 
@@ -3837,19 +3761,7 @@ function Invoke-NestedMenu {
     $numStringTimeoutMs = 1000
     $lastDigitTime = [DateTime]::MinValue
 
-    # Track original cursor state
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-
-    Write-Host "`e[?25l" -NoNewline # Hide real cursor
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -AltScreen:$AltScreen
 
     try {
         if ($X -lt 0 -and $Y -lt 0) { Write-Host "" } # Initial newline
@@ -4067,13 +3979,7 @@ function Invoke-NestedMenu {
         # Clear the entire menu area from the screen on exit
         Write-Host "`e[J" -NoNewline
         
-        # Restore cursor
-        if ($originalCursorVisible) {
-            Write-Host "`e[?25h" -NoNewline
-        }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
 
         # Clean line on abort
         if ($null -eq $result) {
@@ -4174,17 +4080,7 @@ function Read-Date {
     # locales render `月` etc. as fullwidth (2 cells).
     $monthWidth = ($monthAbbrs | ForEach-Object { Get-DisplayWidth $_ } | Measure-Object -Maximum).Maximum
 
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-    Write-Host "`e[?25l" -NoNewline
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -AltScreen:$AltScreen
 
     $running = $true
     $result = $null
@@ -4585,9 +4481,7 @@ function Read-Date {
             Write-Host "`e[$($lastHeight)A" -NoNewline
         }
         Write-Host "`e[J" -NoNewline
-        if ($originalCursorVisible) { Write-Host "`e[?25h" -NoNewline }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
         if ($null -eq $result) { Write-Host "" }
     }
 
@@ -4667,17 +4561,7 @@ function Read-Time {
     $inputMode = 'selection'
     $typeBuffer = ''
 
-    $originalCursorVisible = $true
-    try {
-        if ($null -ne $Host.UI.RawUI.CursorSize -and $Host.UI.RawUI.CursorSize -eq 0) {
-            $originalCursorVisible = $false
-        }
-    } catch {}
-    Write-Host "`e[?25l" -NoNewline
-    if ($AltScreen) { Write-Host "`e[?1049h" -NoNewline }
-
-    $origCtrlC = [Console]::TreatControlCAsInput
-    [Console]::TreatControlCAsInput = $true
+    $raw = Enter-RawConsole -AltScreen:$AltScreen
 
     $running = $true
     $result = $null
@@ -4920,9 +4804,7 @@ function Read-Time {
             Write-Host "`e[$($lastHeight)A" -NoNewline
         }
         Write-Host "`e[J" -NoNewline
-        if ($originalCursorVisible) { Write-Host "`e[?25h" -NoNewline }
-        if ($AltScreen) { Write-Host "`e[?1049l" -NoNewline }
-        [Console]::TreatControlCAsInput = $origCtrlC
+        Exit-RawConsole $raw
         if ($null -eq $result) { Write-Host "" }
     }
 
