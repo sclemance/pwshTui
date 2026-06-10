@@ -153,6 +153,66 @@ Describe 'Format-TuiGrid' {
             $f.Count | Should -Be 7
         }
     }
+
+    Context 'Full-span bands (table header / footer)' {
+        It 'draws a centered Title band with a tee rule into the columns below' {
+            $f = Format-TuiGrid -Rows $sample -Title 'Report'
+            $f[1] | Should -Match 'Report'                 # band line
+            $f[1] | Should -Match '^│ '                    # spans (no interior verticals)
+            $f[1] | Should -Not -Match '│.*Report.*│.*│'   # one cell, not per-column
+            $f[2] | Should -Match '^├─+┬'                  # rule below has downward tees
+        }
+        It 'draws a Caption band with an upward-tee rule above it' {
+            $f = Format-TuiGrid -Rows $sample -Caption 'note'
+            $f[-1] | Should -Match '^└─+┘$'                # bottom border solid below a span band
+            $f[-2] | Should -Match 'note'                  # caption is the last content line
+            $f[-3] | Should -Match '^├─+┴'                 # rule above caption has upward tees
+        }
+        It 'keeps the top border solid above a Title band (no downward tees)' {
+            $f = Format-TuiGrid -Rows $sample -Title 'Report'
+            $f[0] | Should -Match '^┌─+┐$'                 # no ┬ — band has no interior verticals
+        }
+        It 'stacks multi-line bands with no rule between their lines' {
+            $f = Format-TuiGrid -Rows $sample -Title @('Line1', 'Line2') -NoHeader
+            $f[1] | Should -Match 'Line1'
+            $f[2] | Should -Match 'Line2'                  # adjacent, no rule between
+            $f[3] | Should -Match '^├'                     # rule only after the band
+        }
+        It 'holds width agreement with every band present' {
+            $foot = [pscustomobject]@{ Service = 'TOTAL' }
+            $f = Format-TuiGrid -Rows $sample -Title 'Hdr' -Footer $foot -Caption 'Ftr' -GridStyle Double
+            ($f | ForEach-Object { Measure-Cells $_ } | Sort-Object -Unique).Count | Should -Be 1
+        }
+        It 'grows the grid to fit a title wider than the columns, untruncated' {
+            $title = 'A Very Long Report Title Exceeding The Natural Column Width'
+            $f = Format-TuiGrid -Rows $sample -Title $title
+            ($f -join "`n") | Should -Match ([regex]::Escape($title))   # not ellipsized
+            ($f | ForEach-Object { Measure-Cells $_ } | Sort-Object -Unique).Count | Should -Be 1
+        }
+        It 'leaves bands off by default (body-only output is unchanged)' {
+            $f = Format-TuiGrid -Rows $sample
+            $f.Count | Should -Be 9   # no extra band lines
+        }
+    }
+
+    Context 'Bold styling' {
+        It 'emboldens the column header under -BoldHeader' {
+            $f = Format-TuiGrid -Rows $sample -BoldHeader
+            ($f -join '') | Should -Match "$esc\[1m"
+        }
+        It 'emboldens band text by default' {
+            $f = Format-TuiGrid -Rows $sample -Title 'Report'
+            ($f -join '') | Should -Match "$esc\[1m"
+        }
+        It 'degrades (no SGR) under -Ascii' {
+            $f = Format-TuiGrid -Rows $sample -Title 'Report' -BoldHeader -Ascii
+            ($f -join '') | Should -Not -Match "$esc\["
+        }
+        It 'degrades (no SGR) under -NoColor' {
+            $f = Format-TuiGrid -Rows $sample -Title 'Report' -BoldHeader -NoColor
+            ($f -join '') | Should -Not -Match "$esc\["
+        }
+    }
 }
 
 Describe 'Write-TuiGrid' {

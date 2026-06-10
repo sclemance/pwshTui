@@ -1108,23 +1108,41 @@ function Format-TuiGrid {
         Header (title, default Name), Width (fixed width; 0 = auto), and Justify
         (Left/Right/Center, or the short forms l/r/c). When omitted, columns are
         derived from the first row's properties.
+    .PARAMETER Title
+        Optional full-span table-header band(s) drawn above the column headers,
+        spanning the whole grid width. Pass multiple strings for multiple lines.
+        Bold and centered by default (degrades under -Ascii / -NoColor). The
+        grid grows to fit a title wider than its columns where the width budget
+        allows, otherwise the title is truncated.
     .PARAMETER Footer
-        Optional footer row — one object/hashtable read by the same column
-        names as the data rows (missing properties render empty). Drawn below a
-        rule at the bottom of the grid, e.g. for a totals line.
+        Optional per-column footer row — one object/hashtable read by the same
+        column names as the data rows (missing properties render empty), drawn
+        below a rule, e.g. for a totals line.
+    .PARAMETER Caption
+        Optional full-span table-footer band(s) drawn below everything, spanning
+        the whole grid width. Multiple strings = multiple lines. Bold and
+        centered by default (degrades under -Ascii / -NoColor).
     .PARAMETER GridStyle
         Line family: 'Single' (default) box-drawing, or 'Double'. Under ASCII
         both collapse to + - |. Per-row / per-column style mixing is not yet
         supported.
     .PARAMETER NoHeader
-        Suppress the header row (and its rule); render data rows only.
+        Suppress the column-header row (and its rule); render data rows only.
+        The Title / Footer / Caption bands are independent of this switch.
+    .PARAMETER BoldHeader
+        Embolden the column-header row text (degrades under -Ascii / -NoColor).
     .PARAMETER MaxWidth
         Upper bound for the outer grid width. 0 = use the terminal width.
     .PARAMETER Ascii
         Use ASCII glyphs. Defaults to $script:_AsciiMode (PWSHTUI_ASCII); the
         switch overrides per call.
+    .PARAMETER NoColor
+        Disable ANSI styling (the bold on bands / -BoldHeader). Also honored via
+        the $env:NO_COLOR environment variable.
     .EXAMPLE
         PS> Get-Process | Select-Object Id, Name, CPU | Format-TuiGrid
+    .EXAMPLE
+        PS> Format-TuiGrid -Rows $sales -Title 'Q3 Report' -Caption 'Generated today'
     .OUTPUTS
         [string[]] the full framed grid, each line exactly the grid's display
         width. Empty input returns @().
@@ -1139,16 +1157,24 @@ function Format-TuiGrid {
 
         [object[]]$Columns,
 
+        [string[]]$Title,
+
         [object]$Footer,
+
+        [string[]]$Caption,
 
         [ValidateSet('Single', 'Double')]
         [string]$GridStyle = 'Single',
 
         [switch]$NoHeader,
 
+        [switch]$BoldHeader,
+
         [int]$MaxWidth = 0,
 
-        [switch]$Ascii
+        [switch]$Ascii,
+
+        [switch]$NoColor
     )
 
     begin {
@@ -1248,13 +1274,48 @@ function Format-TuiGrid {
             $col.Resolved = [Math]::Max(1, $w)
         }
 
-        # Fit to width: each column occupies Resolved + 2 cells (a space of
-        # padding each side); the frame adds the outer border and one vertical
-        # per interior boundary. Shrink the widest column until the grid fits.
+        # Effective styling: bold is honored only outside ASCII / NoColor.
+        $noColorOn = $NoColor -or [bool]$env:NO_COLOR
+        $styleOn   = (-not $asciiOn) -and (-not $noColorOn)
+        $bold = {
+            param($text)
+            if ($styleOn -and $text -ne '') { "`e[1m$text`e[22m" } else { $text }
+        }
+
+        # Full-span band lines (table header / footer). Null entries dropped so
+        # callers can pass $null freely.
+        $titleLines   = @($Title   | Where-Object { $null -ne $_ })
+        $captionLines = @($Caption | Where-Object { $null -ne $_ })
+
+        # The content width a band cell spans (everything between the outer
+        # borders minus its own one-space padding) given the current columns.
+        $spanWidth = {
+            $s = 0
+            foreach ($col in $cols) { $s += $col.Resolved }
+            $s + 3 * $cols.Count - 3
+        }
+
+        # Fit to width: a per-column line is Sum(Resolved) + 3*N + 1 cells wide
+        # (border + one-space padding each side + interior verticals). First grow
+        # columns evenly so a long band fits where the budget allows, then shrink
+        # the widest column until the grid fits the terminal / -MaxWidth.
         $winWidth = 80
         try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
         $limit = ($MaxWidth -gt 0) ? [Math]::Min($MaxWidth, $winWidth) : $winWidth
         $overhead = 3 * $cols.Count + 1
+
+        $widestBand = 0
+        foreach ($line in ($titleLines + $captionLines)) {
+            $bw = Get-DisplayWidth ([string]$line)
+            if ($bw -gt $widestBand) { $widestBand = $bw }
+        }
+        $deficit = $widestBand - (& $spanWidth)
+        if ($deficit -gt 0 -and ((& $spanWidth) + 4 + $deficit) -le $limit) {
+            for ($k = 0; $k -lt $deficit; $k++) {
+                $cols[$k % $cols.Count].Resolved = $cols[$k % $cols.Count].Resolved + 1
+            }
+        }
+
         while ($true) {
             $sum = 0
             foreach ($col in $cols) { $sum += $col.Resolved }
@@ -1265,60 +1326,106 @@ function Format-TuiGrid {
             $widest.Resolved = $widest.Resolved - 1
         }
 
-        # --- Assemble the frame ---
-        $frame = [System.Collections.Generic.List[string]]::new()
+        $ncols = $cols.Count
+        $bandWidth = (& $spanWidth)
 
-        $buildRule = {
-            param([string]$pos)   # 'top' | 'mid' | 'bottom'
-            $left  = switch ($pos) { 'top' { $g.TL } 'bottom' { $g.BL } default { $g.TeeL } }
-            $junc  = switch ($pos) { 'top' { $g.TeeT } 'bottom' { $g.TeeB } default { $g.Cross } }
-            $right = switch ($pos) { 'top' { $g.TR } 'bottom' { $g.BR } default { $g.TeeR } }
-            $sb = [System.Text.StringBuilder]::new()
-            [void]$sb.Append($left)
-            for ($i = 0; $i -lt $cols.Count; $i++) {
-                [void]$sb.Append($g.H * ($cols[$i].Resolved + 2))
-                if ($i -lt $cols.Count - 1) { [void]$sb.Append($junc) }
-            }
-            [void]$sb.Append($right)
-            $sb.ToString()
+        # --- Ordered content rows. Each descriptor records whether it spans all
+        # columns (a band) and whether a rule precedes it (continuation lines of
+        # a multi-line band suppress their leading rule so the band reads solid). ---
+        $layout = [System.Collections.Generic.List[hashtable]]::new()
+
+        for ($i = 0; $i -lt $titleLines.Count; $i++) {
+            $layout.Add(@{ Span = $true; Text = [string]$titleLines[$i]; Bold = $true; RuleBefore = ($i -eq 0) })
         }
-
-        $buildRow = {
-            param([hashtable]$cellMap)
-            $sb = [System.Text.StringBuilder]::new()
-            [void]$sb.Append($g.V)
-            foreach ($col in $cols) {
-                $text = if ($cellMap.ContainsKey($col.Name)) { $cellMap[$col.Name] } else { '' }
-                [void]$sb.Append(' ')
-                [void]$sb.Append((Format-TuiColumn -Text $text -Width $col.Resolved -Justify $col.Justify))
-                [void]$sb.Append(' ')
-                [void]$sb.Append($g.V)
-            }
-            $sb.ToString()
-        }
-
-        $frame.Add((& $buildRule 'top'))
-
         if (-not $NoHeader) {
             $hdr = @{}
             foreach ($col in $cols) { $hdr[$col.Name] = $col.Header }
-            $frame.Add((& $buildRow $hdr))
-            $frame.Add((& $buildRule 'mid'))
+            $layout.Add(@{ Span = $false; Cells = $hdr; Bold = [bool]$BoldHeader; RuleBefore = $true })
         }
-
         for ($r = 0; $r -lt $collected.Count; $r++) {
             $cellMap = @{}
             foreach ($col in $cols) { $cellMap[$col.Name] = & $getCell $collected[$r] $col.Name }
-            $frame.Add((& $buildRow $cellMap))
-            if ($r -lt $collected.Count - 1) { $frame.Add((& $buildRule 'mid')) }
+            $layout.Add(@{ Span = $false; Cells = $cellMap; Bold = $false; RuleBefore = $true })
         }
-
         if ($hasFooter) {
-            $frame.Add((& $buildRule 'mid'))
-            $frame.Add((& $buildRow $footerCells))
+            $layout.Add(@{ Span = $false; Cells = $footerCells; Bold = $false; RuleBefore = $true })
+        }
+        for ($i = 0; $i -lt $captionLines.Count; $i++) {
+            $layout.Add(@{ Span = $true; Text = [string]$captionLines[$i]; Bold = $true; RuleBefore = ($i -eq 0) })
         }
 
-        $frame.Add((& $buildRule 'bottom'))
+        if ($layout.Count -eq 0) { return @() }
+
+        # --- Edge-grid junctions. A vertical edge exists at column boundary x
+        # for a row when x is an outer border (0 or ncols) or the row is not a
+        # span band. Each junction glyph on a rule is chosen from which edges
+        # (up / down / left / right) actually meet it — so the same builder draws
+        # the outer borders, the cross-ruled body, and the band tees alike. ---
+        $hasV = {
+            param($row, $x)
+            if ($null -eq $row) { return $false }
+            ($x -eq 0 -or $x -eq $ncols) -or (-not $row.Span)
+        }
+        $pick = {
+            param($up, $down, $left, $right)
+            if ($up -and $down -and $left -and $right) { return $g.Cross }
+            if ($down -and $left -and $right) { return $g.TeeT }
+            if ($up -and $left -and $right)   { return $g.TeeB }
+            if ($up -and $down -and $right)   { return $g.TeeL }
+            if ($up -and $down -and $left)    { return $g.TeeR }
+            if ($down -and $right) { return $g.TL }
+            if ($down -and $left)  { return $g.TR }
+            if ($up -and $right)   { return $g.BL }
+            if ($up -and $left)    { return $g.BR }
+            if ($left -and $right) { return $g.H }
+            if ($up -and $down)    { return $g.V }
+            return ' '
+        }
+        $buildRule = {
+            param($above, $below)
+            $sb = [System.Text.StringBuilder]::new()
+            for ($x = 0; $x -le $ncols; $x++) {
+                $up    = & $hasV $above $x
+                $down  = & $hasV $below $x
+                [void]$sb.Append((& $pick $up $down ($x -gt 0) ($x -lt $ncols)))
+                if ($x -lt $ncols) { [void]$sb.Append($g.H * ($cols[$x].Resolved + 2)) }
+            }
+            $sb.ToString()
+        }
+
+        $buildContent = {
+            param($row)
+            $sb = [System.Text.StringBuilder]::new()
+            if ($row.Span) {
+                $text = if ($row.Bold) { & $bold $row.Text } else { $row.Text }
+                [void]$sb.Append("$($g.V) ")
+                [void]$sb.Append((Format-TuiColumn -Text $text -Width $bandWidth -Justify 'Center'))
+                [void]$sb.Append(" $($g.V)")
+            } else {
+                [void]$sb.Append($g.V)
+                foreach ($col in $cols) {
+                    $cell = if ($row.Cells.ContainsKey($col.Name)) { $row.Cells[$col.Name] } else { '' }
+                    if ($row.Bold) { $cell = & $bold $cell }
+                    [void]$sb.Append(' ')
+                    [void]$sb.Append((Format-TuiColumn -Text $cell -Width $col.Resolved -Justify $col.Justify))
+                    [void]$sb.Append(" $($g.V)")
+                }
+            }
+            $sb.ToString()
+        }
+
+        # Emit: top border, then each row preceded by its rule (continuation
+        # lines of a band excepted), then the bottom border.
+        $frame = [System.Collections.Generic.List[string]]::new()
+        for ($i = 0; $i -lt $layout.Count; $i++) {
+            if ($i -eq 0) {
+                $frame.Add((& $buildRule $null $layout[0]))
+            } elseif ($layout[$i].RuleBefore) {
+                $frame.Add((& $buildRule $layout[$i - 1] $layout[$i]))
+            }
+            $frame.Add((& $buildContent $layout[$i]))
+        }
+        $frame.Add((& $buildRule $layout[$layout.Count - 1] $null))
 
         return $frame.ToArray()
     }
@@ -1573,15 +1680,15 @@ function Write-TuiTable {
         if ($PSBoundParameters.ContainsKey('Ascii')) { $ftArgs.Ascii = $Ascii }
         if ($NoHeader) { $ftArgs.NoHeader = $true }
 
-        $rowsOut = @(Format-TuiTable -Rows $collected.ToArray() @ftArgs)
-        if ($rowsOut.Count -eq 0) { return }
+        $layoutOut = @(Format-TuiTable -Rows $collected.ToArray() @ftArgs)
+        if ($layoutOut.Count -eq 0) { return }
 
         # Split the header row out so the box renders it as its header band.
         $header = @()
-        $body = $rowsOut
+        $body = $layoutOut
         if (-not $NoHeader) {
-            $header = @($rowsOut[0])
-            $body = if ($rowsOut.Count -gt 1) { $rowsOut[1..($rowsOut.Count - 1)] } else { @() }
+            $header = @($layoutOut[0])
+            $body = if ($layoutOut.Count -gt 1) { $layoutOut[1..($layoutOut.Count - 1)] } else { @() }
         }
         if ($Title) { $header = @($Title) + $header }
         # Write-TuiBox -Body is Mandatory and must be non-empty.
@@ -1624,12 +1731,18 @@ function Write-TuiGrid {
         Data rows; see Format-TuiGrid -Rows. Accepts pipeline input.
     .PARAMETER Columns
         Optional column spec; see Format-TuiGrid -Columns.
+    .PARAMETER Title
+        Optional full-span table-header band(s); see Format-TuiGrid -Title.
     .PARAMETER Footer
-        Optional footer row object; see Format-TuiGrid -Footer.
+        Optional per-column footer row object; see Format-TuiGrid -Footer.
+    .PARAMETER Caption
+        Optional full-span table-footer band(s); see Format-TuiGrid -Caption.
     .PARAMETER GridStyle
         'Single' (default) or 'Double' line family; see Format-TuiGrid -GridStyle.
     .PARAMETER NoHeader
-        Suppress the header row and its rule.
+        Suppress the column-header row and its rule.
+    .PARAMETER BoldHeader
+        Embolden the column-header row; see Format-TuiGrid -BoldHeader.
     .PARAMETER MaxWidth
         Upper bound for the outer grid width. 0 = terminal width.
     .PARAMETER X
@@ -1638,6 +1751,8 @@ function Write-TuiGrid {
         Absolute row to render at. -1 = current cursor position.
     .PARAMETER Ascii
         Use ASCII glyphs. See Format-TuiGrid -Ascii.
+    .PARAMETER NoColor
+        Disable ANSI styling (bold). See Format-TuiGrid -NoColor.
     .PARAMETER PassThru
         Emit the rendered line count. Without it the function returns nothing.
     .EXAMPLE
@@ -1653,14 +1768,18 @@ function Write-TuiGrid {
         [object[]]$Rows,
 
         [object[]]$Columns,
+        [string[]]$Title,
         [object]$Footer,
+        [string[]]$Caption,
         [ValidateSet('Single', 'Double')]
         [string]$GridStyle = 'Single',
         [switch]$NoHeader,
+        [switch]$BoldHeader,
         [int]$MaxWidth = 0,
         [int]$X = -1,
         [int]$Y = -1,
         [switch]$Ascii,
+        [switch]$NoColor,
         [switch]$PassThru
     )
 
@@ -1679,9 +1798,13 @@ function Write-TuiGrid {
 
         $fgArgs = @{ GridStyle = $GridStyle; MaxWidth = $MaxWidth }
         if ($Columns) { $fgArgs.Columns = $Columns }
+        if ($PSBoundParameters.ContainsKey('Title'))  { $fgArgs.Title = $Title }
         if ($PSBoundParameters.ContainsKey('Footer')) { $fgArgs.Footer = $Footer }
-        if ($NoHeader) { $fgArgs.NoHeader = $true }
-        if ($PSBoundParameters.ContainsKey('Ascii')) { $fgArgs.Ascii = $Ascii }
+        if ($PSBoundParameters.ContainsKey('Caption')) { $fgArgs.Caption = $Caption }
+        if ($NoHeader)   { $fgArgs.NoHeader = $true }
+        if ($BoldHeader) { $fgArgs.BoldHeader = $true }
+        if ($PSBoundParameters.ContainsKey('Ascii'))   { $fgArgs.Ascii = $Ascii }
+        if ($NoColor)    { $fgArgs.NoColor = $true }
 
         $frame = @(Format-TuiGrid -Rows $collected.ToArray() @fgArgs)
         if ($frame.Count -eq 0) { return }

@@ -742,37 +742,57 @@ Get-Service | Select-Object Name, Status | Write-TuiTable -Border -Title "Servic
 ### `Write-TuiGrid`
 Renders objects as a **fully-ruled grid** — an outer border, a rule under the header, a rule between every data row, a rule above the footer, and vertical rules between columns, all joined with proper box-drawing junctions (corners, edge tees `├ ┤ ┬ ┴`, and the interior cross `┼`). This is the heavyweight, self-drawing counterpart to [`Write-TuiTable`](#write-tuitable): use `Write-TuiTable` for a light table framed by [`Write-TuiBox`](#write-tuibox); reach for `Write-TuiGrid` when you want interior gridlines and crossbars. It lays the rows out with [`Format-TuiGrid`](#format-tuigrid) and renders the frame through the same positioning/redraw path as `Write-TuiBox` (so `-X` / `-Y` and `-PassThru` behave identically).
 
+It models a table as five optional row roles — all independent, drawn only when present:
+
+| Role | Slot | Span |
+|---|---|---|
+| **table header** | `-Title` | full-width band |
+| **column header** | from data / `-Columns` | per-column |
+| **table body** | `-Rows` | per-column |
+| **column footer** | `-Footer` | per-column |
+| **table footer** | `-Caption` | full-width band |
+
 **Features:**
 - Auto-sized columns; columns whose every cell parses as a number are **right-justified by default**.
 - Single or double line family; under ASCII both collapse to `+ - |`.
-- Optional footer row (e.g. a totals line) and fit-to-width column shrinking.
+- Full-span `-Title` / `-Caption` bands (bold + centered, multi-line) with correct tee junctions into the columns; the grid grows to fit a band wider than its columns where the width budget allows.
+- Optional per-column `-Footer` (totals) row, `-BoldHeader`, and fit-to-width column shrinking.
 
 **Parameters:**
 - `-Rows`: `[object[]]` data rows (`[PSCustomObject]`, hashtable/ordered, or any object). Accepts pipeline input.
 - `-Columns`: `[object[]]` optional column spec — see [`Format-TuiGrid`](#format-tuigrid).
-- `-Footer`: `[object]` optional footer row, read by the same column names as the data rows (missing properties render empty).
+- `-Title`: `[string[]]` full-span table-header band(s) above the column headers (bold + centered).
+- `-Footer`: `[object]` optional per-column footer row, read by the same column names as the data rows (missing properties render empty).
+- `-Caption`: `[string[]]` full-span table-footer band(s) below everything (bold + centered).
 - `-GridStyle`: `Single` (default) or `Double` line family.
-- `-NoHeader`: (Switch) Suppress the header row and its rule.
+- `-NoHeader`: (Switch) Suppress the column-header row and its rule (bands are independent).
+- `-BoldHeader`: (Switch) Embolden the column-header row.
 - `-MaxWidth`: `[int]` upper bound for the outer grid width (`0` = terminal width); the widest columns shrink to fit.
 - `-X` / `-Y`: Absolute coordinates for the top-left corner (`-1` = current cursor position).
 - `-Ascii`: (Switch) Use ASCII glyphs. See [Rendering Modes](#rendering-modes).
+- `-NoColor`: (Switch) Disable ANSI styling (bold); also honored via `$env:NO_COLOR`.
 - `-PassThru`: (Switch) Emit the rendered line count.
 
 **Example:**
 ```powershell
-Get-Service | Select-Object Name, Status | Write-TuiGrid -GridStyle Double
+$sales | Write-TuiGrid -Title "Quarterly Sales" -Footer $totals -Caption "Generated 2026-06-10" -GridStyle Double
 ```
 ```
-╔═════════════╦═════════╦═══════╦══════╗
-║ Service     ║ Status  ║   PID ║  CPU ║
-╠═════════════╬═════════╬═══════╬══════╣
-║ nginx       ║ Running ║  1240 ║  0.4 ║
-╠═════════════╬═════════╬═══════╬══════╣
-║ postgres    ║ Running ║  9982 ║ 12.7 ║
-╚═════════════╩═════════╩═══════╩══════╝
+╔══════════════════════╗
+║    Quarterly Sales    ║
+╠═════════╦══════╦═════╣
+║ Region  ║   Q1 ║  Q2 ║
+╠═════════╬══════╬═════╣
+║ West    ║  120 ║ 140 ║
+╠═════════╬══════╬═════╣
+║ East    ║   90 ║ 110 ║
+╠═════════╩══════╩═════╣
+║ Generated 2026-06-10 ║
+╚══════════════════════╝
 ```
+(Header/band text renders bold on a VT terminal; shown plain here.)
 
-> Per-row / per-column gridline styles and column spans (a header cell spanning several columns) are not supported yet — `Write-TuiGrid` renders a *uniform* grid. For a borderless or box-framed table without interior rules, use [`Write-TuiTable`](#write-tuitable).
+> Spanning bands are full-width only. *Grouped* column headers (a header cell spanning a **subset** of columns) and per-row / per-column gridline styles are not supported yet — `Write-TuiGrid` renders a *uniform* column grid. For a borderless or box-framed table without interior rules, use [`Write-TuiTable`](#write-tuitable).
 
 ---
 
@@ -1012,7 +1032,7 @@ Available on: `Write-TuiBox`, `Write-TuiTable`, `Write-TuiGrid`, `Format-TuiTabl
 | `Read-Timezone` | Inherited from `Get-PaginatedSelection` | Inherited from `Get-PaginatedSelection` |
 | `Show-Spinner` | Cyan spinner glyph | Plain glyph |
 
-Available on: `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Read-Date`, `Read-Time`, `Read-Timezone`.
+Available on: `Write-TuiGrid`, `Format-TuiGrid`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-MaskedInput`, `Read-Password`, `Read-ValidatedInput`, `Read-Confirmation`, `Read-Choice`, `Read-Date`, `Read-Time`, `Read-Timezone`.
 
 **Resolution rule** (consistent everywhere): explicit per-call switch > environment variable > rich default. A per-call `-Ascii:$false` will force Unicode even when the env var is set.
 
