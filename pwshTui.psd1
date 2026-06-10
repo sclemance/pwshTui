@@ -1,13 +1,13 @@
 @{
     RootModule           = 'pwshTui.psm1'
-    ModuleVersion        = '0.20.0'
+    ModuleVersion        = '0.22.0'
     GUID                 = 'd2b8e3a1-7c9d-4e5f-8b2a-1c3d4e5f6e7f'
     Author               = 'Stan Clemance'
     CompanyName          = 'Unknown'
     Copyright            = '(c) 2026 Stan Clemance. All rights reserved.'
     Description          = 'PowerShell 7.4+ TUI library: paginated selectors with fuzzy search and multi-select, nested menus, date / time / timezone pickers, masked / validated / password / Yes-No input, animated spinners, and box rendering. Pure PowerShell, no compiled dependencies.'
     PowerShellVersion    = '7.4'
-    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Read-Percentage', 'Read-Temperature', 'Read-Currency', 'Read-Measurement', 'Get-MeasurementFamily', 'Show-Spinner', 'Write-Spinner', 'Set-SpinnerActivity', 'Invoke-NestedMenu', 'Write-TuiBox', 'Format-TuiColumn', 'Format-TuiWrap', 'Measure-FuzzyMatch')
+    FunctionsToExport    = @('Get-PaginatedSelection', 'Read-MaskedInput', 'Read-Password', 'Read-ValidatedInput', 'Read-Number', 'Read-Confirmation', 'Read-Choice', 'Read-Date', 'Read-Time', 'Read-Timezone', 'Read-Phone', 'Read-Email', 'Read-IPv4', 'Read-CIDR', 'Read-URL', 'Read-Percentage', 'Read-Temperature', 'Read-Currency', 'Read-Measurement', 'Get-MeasurementFamily', 'Show-Spinner', 'Write-Spinner', 'Set-SpinnerActivity', 'Invoke-NestedMenu', 'Write-TuiBox', 'Write-TuiTable', 'Write-TuiGrid', 'Format-TuiColumn', 'Format-TuiTable', 'Format-TuiGrid', 'Format-TuiWrap', 'Measure-FuzzyMatch')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()

@@ -166,7 +166,7 @@ $demoFn = @{
     number = 'Read-Number'; number_wrappers = 'Read-Number family'; measurement = 'Read-Measurement'; templated = 'Read-Phone family'
     date = 'Read-Date'; date_calendar = 'Read-Date'; time = 'Read-Time'; time_twelve = 'Read-Time'; timezone = 'Read-Timezone'
     spinner = 'Show-Spinner'; spinner_timer = 'Show-Spinner'; spinner_styles = 'Show-Spinner'; spinner_closure = 'Show-Spinner'
-    uibox = 'Write-TuiBox'
+    uibox = 'Write-TuiBox'; table = 'Write-TuiTable'
 }
 
 $systemObjects = @()
@@ -429,6 +429,29 @@ function Show-UIBoxDemo {
     Wait-ReturnKey
 }
 
+function Show-TableDemo {
+    Write-DemoHeader (Get-DemoString 'Header_Table')
+    Write-Host (Get-DemoString 'Hint_Table') -ForegroundColor DarkGray
+    Write-Host ""
+    # Sample rows are English filler (like $menuData) — real callers pass their
+    # own objects straight off the pipeline.
+    $rows = @(
+        [pscustomobject]@{ Service = 'nginx';       Status = 'Running'; PID = 1240;  CPU = 0.4 }
+        [pscustomobject]@{ Service = 'postgres';    Status = 'Running'; PID = 9982;  CPU = 12.7 }
+        [pscustomobject]@{ Service = 'redis';       Status = 'Stopped'; PID = 0;     CPU = 0 }
+        [pscustomobject]@{ Service = 'api-gateway'; Status = 'Running'; PID = 33105; CPU = 5.1 }
+    )
+    # Auto-sized columns; numeric columns right-justified. -Ascii is omitted so
+    # the table follows the demo's current render mode (the module default).
+    $rows | Write-TuiTable -Border -Title (Get-DemoString 'Title_Services') -Columns @(
+        @{ Name = 'Service' },
+        @{ Name = 'Status' },
+        @{ Name = 'PID'; Justify = 'Right' },
+        @{ Name = 'CPU'; Header = 'CPU%'; Justify = 'Right' }
+    )
+    Wait-ReturnKey
+}
+
 function Show-DateDemo {
     Write-DemoHeader (Get-DemoString 'Header_Date')
     Write-Host (Get-DemoString 'Hint_Date') -ForegroundColor DarkGray
@@ -624,6 +647,7 @@ while ($running) {
             @{ Label = (Get-DemoString 'Menu_SpinnerStyles');   Value = "spinner_styles" }
             @{ Label = (Get-DemoString 'Menu_SpinnerClosure');  Value = "spinner_closure" }
             @{ Label = (Get-DemoString 'Menu_UIBox');           Value = "uibox" }
+            @{ Label = (Get-DemoString 'Menu_Table');           Value = "table" }
         )}
         @{ Label = (Get-DemoString 'Menu_ToggleRenderMode' $modeLabel); Value = "toggle_ascii" }
         @{ Label = (Get-DemoString 'Menu_ChangeLanguage' $script:demoCulture); Children = @(
@@ -664,6 +688,7 @@ while ($running) {
         'spinner_styles'    { Show-SpinnerStylesDemo }
         'spinner_closure'   { Show-SpinnerClosureDemo }
         'uibox'             { Show-UIBoxDemo }
+        'table'             { Show-TableDemo }
         'date'              { Show-DateDemo }
         'date_calendar'     { Show-DateCalendarDemo }
         'time'              { Show-TimeDemo }

@@ -860,6 +860,470 @@ function Format-TuiWrap {
     return $lines.ToArray()
 }
 
+function Format-TuiTable {
+    <#
+    .SYNOPSIS
+        Lay out tabular data into fixed-width, display-width-aware rows.
+    .DESCRIPTION
+        Turns a set of objects into an array of strings — one per row — where
+        every cell is aligned into a fixed column via Format-TuiColumn and the
+        columns are joined by a separator. Every returned row measures exactly
+        the same number of display cells (sum of column widths plus the
+        separators between them), so the result drops straight into
+        Write-TuiBox -Body without the box re-truncating or mis-padding it.
+        This is the same width-agreement discipline the menu layout relies on.
+
+        Columns are auto-sized to the widest cell (and header) they contain,
+        measured the module's way (CJK = 2 cells, ANSI = 0) via Get-DisplayWidth.
+        A per-column Width pins the column to that width instead, letting
+        Format-TuiColumn truncate overlong cells with an ellipsis.
+
+        Pure function, no host output. See Write-TuiTable for the rendering
+        wrapper that frames the result in a box.
+    .PARAMETER Rows
+        The data rows. Each row may be a [PSCustomObject], an [IDictionary]
+        (hashtable / ordered), or any object whose properties hold the cell
+        values. Accepts pipeline input, so `$procs | Format-TuiTable` works.
+        Null rows are skipped.
+    .PARAMETER Columns
+        Optional column specification controlling which columns appear, their
+        order, titles, widths, and justification. Each entry is either a plain
+        string (a property name, used as both the value source and the header)
+        or a hashtable with keys:
+          Name    - property to read from each row (required)
+          Header  - column title (default: Name)
+          Width   - fixed column width; 0 / omitted = auto-size to content
+          Justify - Left (default) | Right | Center, applied to cells and header
+        When omitted, columns are derived from the properties of the first row
+        (property order for objects; key order for ordered dictionaries —
+        plain hashtables have no guaranteed order, so pass -Columns to pin it).
+    .PARAMETER Separator
+        String placed between columns. Default ' <BorderV> ' (a vertical bar
+        fenced by spaces), Ascii-aware. Pass '  ' for plain spaced columns.
+    .PARAMETER HeaderRule
+        Emit a horizontal rule row (BorderH glyphs spanning the full table
+        width) immediately after the header row. Useful when feeding the whole
+        result to Write-TuiBox -Body; omit it when handing the header off to
+        Write-TuiBox -Header (which draws its own connector). No-op with -NoHeader.
+    .PARAMETER NoHeader
+        Suppress the header row entirely; emit only data rows.
+    .PARAMETER Ascii
+        Use ASCII glyphs for the default separator and the header rule.
+        Defaults to $script:_AsciiMode (PWSHTUI_ASCII env var); the switch
+        overrides per call.
+    .EXAMPLE
+        PS> Get-Process | Select-Object Id, Name, CPU | Format-TuiTable
+        Auto-sized table with a header row, derived from the object properties.
+    .EXAMPLE
+        PS> Format-TuiTable -Rows $svc -Columns @(
+                @{ Name = 'Name'; Width = 20 },
+                @{ Name = 'Status'; Justify = 'Right' })
+        Two explicit columns: Name capped at 20 cells, Status right-justified.
+    .OUTPUTS
+        [string[]] one entry per row (header, optional rule, then data rows),
+        each exactly the table's full display width. Empty input returns @().
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Rows,
+
+        [object[]]$Columns,
+
+        [string]$Separator,
+
+        [switch]$HeaderRule,
+
+        [switch]$NoHeader,
+
+        [switch]$Ascii
+    )
+
+    begin {
+        $collected = [System.Collections.Generic.List[object]]::new()
+        # Read a cell from a row, supporting both dictionaries and objects.
+        $getCell = {
+            param($row, $name)
+            $v = if ($row -is [System.Collections.IDictionary]) { $row[$name] } else { $row.$name }
+            if ($null -eq $v) { '' } else { [string]$v }
+        }
+    }
+
+    process {
+        if ($null -ne $Rows) {
+            foreach ($r in $Rows) { if ($null -ne $r) { $collected.Add($r) } }
+        }
+    }
+
+    end {
+        if ($collected.Count -eq 0 -and -not $Columns) { return @() }
+
+        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+        $g = Get-Glyphs $asciiOn
+        if (-not $PSBoundParameters.ContainsKey('Separator')) { $Separator = " $($g.BorderV) " }
+
+        # Normalize the column spec into a uniform list of hashtables.
+        $cols = [System.Collections.Generic.List[hashtable]]::new()
+        if ($Columns) {
+            foreach ($c in $Columns) {
+                if ($c -is [System.Collections.IDictionary]) {
+                    $name = if ($null -ne $c['Name']) { [string]$c['Name'] } else { [string]$c['Header'] }
+                    $cols.Add(@{
+                        Name    = $name
+                        Header  = if ($null -ne $c['Header']) { [string]$c['Header'] } else { $name }
+                        Width   = if ($null -ne $c['Width']) { [int]$c['Width'] } else { 0 }
+                        Justify = if ($c['Justify']) { [string]$c['Justify'] } else { 'Left' }
+                    })
+                } else {
+                    $name = [string]$c
+                    $cols.Add(@{ Name = $name; Header = $name; Width = 0; Justify = 'Left' })
+                }
+            }
+        } else {
+            $first = $collected[0]
+            $names = if ($first -is [System.Collections.IDictionary]) { @($first.Keys) } else { @($first.PSObject.Properties.Name) }
+            foreach ($n in $names) { $cols.Add(@{ Name = [string]$n; Header = [string]$n; Width = 0; Justify = 'Left' }) }
+        }
+
+        # Resolve each column's final width: a fixed Width wins; otherwise the
+        # widest of the header and every cell, measured in display cells.
+        foreach ($col in $cols) {
+            if ($col.Width -gt 0) { $col.Resolved = $col.Width; continue }
+            $w = if ($NoHeader) { 0 } else { Get-DisplayWidth $col.Header }
+            foreach ($row in $collected) {
+                $cw = Get-DisplayWidth (& $getCell $row $col.Name)
+                if ($cw -gt $w) { $w = $cw }
+            }
+            $col.Resolved = $w
+        }
+
+        $out = [System.Collections.Generic.List[string]]::new()
+        $sepW = Get-DisplayWidth $Separator
+
+        if (-not $NoHeader) {
+            $parts = foreach ($col in $cols) { Format-TuiColumn -Text $col.Header -Width $col.Resolved -Justify $col.Justify }
+            $out.Add(($parts -join $Separator))
+            if ($HeaderRule) {
+                # Bridge the separator gaps with BorderH so the rule reads as one
+                # continuous line at exactly the table's full width.
+                $ruleParts = foreach ($col in $cols) { $g.BorderH * $col.Resolved }
+                $out.Add(($ruleParts -join ($g.BorderH * $sepW)))
+            }
+        }
+
+        foreach ($row in $collected) {
+            $parts = foreach ($col in $cols) {
+                Format-TuiColumn -Text (& $getCell $row $col.Name) -Width $col.Resolved -Justify $col.Justify
+            }
+            $out.Add(($parts -join $Separator))
+        }
+
+        return $out.ToArray()
+    }
+}
+
+function Get-TuiGridGlyphs {
+    # Border/junction glyph set for Write-TuiGrid. 'Single' and 'Double' are the
+    # Unicode box-drawing families; under ASCII both collapse to + - | (the
+    # double family has no ASCII representation, and crossbars degrade to '+').
+    # Keys cover the four-way junctions a uniform grid needs: corners (TL/TR/
+    # BL/BR), edge tees (TeeL/TeeR/TeeT/TeeB) and the interior Cross.
+    param([bool]$Ascii, [string]$Style)
+    if ($Ascii) {
+        return @{ H = '-'; V = '|'; TL = '+'; TR = '+'; BL = '+'; BR = '+'
+                  TeeL = '+'; TeeR = '+'; TeeT = '+'; TeeB = '+'; Cross = '+' }
+    }
+    if ($Style -eq 'Double') {
+        return @{ H = "$([char]0x2550)"; V = "$([char]0x2551)"
+                  TL = "$([char]0x2554)"; TR = "$([char]0x2557)"; BL = "$([char]0x255A)"; BR = "$([char]0x255D)"
+                  TeeL = "$([char]0x2560)"; TeeR = "$([char]0x2563)"; TeeT = "$([char]0x2566)"; TeeB = "$([char]0x2569)"
+                  Cross = "$([char]0x256C)" }
+    }
+    return @{ H = "$([char]0x2500)"; V = "$([char]0x2502)"
+              TL = "$([char]0x250C)"; TR = "$([char]0x2510)"; BL = "$([char]0x2514)"; BR = "$([char]0x2518)"
+              TeeL = "$([char]0x251C)"; TeeR = "$([char]0x2524)"; TeeT = "$([char]0x252C)"; TeeB = "$([char]0x2534)"
+              Cross = "$([char]0x253C)" }
+}
+
+function Write-FrameLines {
+    # Shared frame renderer: write each line, optionally cursor-positioned at
+    # (X, Y) — absolute rows when Y >= 0, otherwise column-only via CHA — and
+    # clear to end of line so a redraw over old content leaves no tail. Returns
+    # the rendered line count for cursor management. Used by both Write-TuiBox
+    # and Write-TuiGrid so the positioning + redraw contract the interactive
+    # widgets depend on lives in exactly one place.
+    param(
+        [string[]]$Frame,
+        [int]$X = -1,
+        [int]$Y = -1
+    )
+    $currentY = $Y
+    foreach ($line in $Frame) {
+        if ($X -ge 0) {
+            if ($currentY -ge 0) {
+                Write-Host "`e[$($currentY);$($X)H" -NoNewline
+                $currentY++
+            } else {
+                Write-Host "`e[$($X)G" -NoNewline
+            }
+        }
+        Write-Host "$line`e[K"
+    }
+    return $Frame.Count
+}
+
+function Format-TuiGrid {
+    <#
+    .SYNOPSIS
+        Lay out objects as a fully-ruled table grid with crossbar junctions.
+    .DESCRIPTION
+        Renders a uniform table — every row the same columns — into a complete
+        framed grid: an outer border, a rule under the header, a rule between
+        every data row, a rule above the footer, and vertical rules between
+        columns, with proper box-drawing junction glyphs (corners, edge tees,
+        and the interior cross) at every intersection. Unlike Format-TuiTable
+        (which returns bare content rows for Write-TuiBox to frame), this emits
+        the entire frame — borders and content interleaved — because once there
+        are interior horizontal rules the two can't be separated.
+
+        Cells are aligned via Format-TuiColumn and measured with the module's
+        display-width rules (CJK = 2 cells, ANSI = 0). Columns auto-size to the
+        widest of their header, cells, and footer; a per-column Width pins the
+        column instead. Columns whose every cell parses as a number are
+        right-justified by default. If the natural grid is wider than the
+        terminal (or -MaxWidth), the widest columns are shrunk until it fits,
+        with Format-TuiColumn truncating the overflowing cells.
+
+        Pure function, no host output. See Write-TuiGrid for the renderer.
+    .PARAMETER Rows
+        The data rows ([PSCustomObject], [IDictionary], or any object whose
+        properties hold the cell values). Accepts pipeline input; null rows are
+        skipped.
+    .PARAMETER Columns
+        Optional column spec — same model as Format-TuiTable. Each entry is a
+        property-name string or a hashtable with keys: Name (property to read),
+        Header (title, default Name), Width (fixed width; 0 = auto), and Justify
+        (Left/Right/Center, or the short forms l/r/c). When omitted, columns are
+        derived from the first row's properties.
+    .PARAMETER Footer
+        Optional footer row — one object/hashtable read by the same column
+        names as the data rows (missing properties render empty). Drawn below a
+        rule at the bottom of the grid, e.g. for a totals line.
+    .PARAMETER GridStyle
+        Line family: 'Single' (default) box-drawing, or 'Double'. Under ASCII
+        both collapse to + - |. Per-row / per-column style mixing is not yet
+        supported.
+    .PARAMETER NoHeader
+        Suppress the header row (and its rule); render data rows only.
+    .PARAMETER MaxWidth
+        Upper bound for the outer grid width. 0 = use the terminal width.
+    .PARAMETER Ascii
+        Use ASCII glyphs. Defaults to $script:_AsciiMode (PWSHTUI_ASCII); the
+        switch overrides per call.
+    .EXAMPLE
+        PS> Get-Process | Select-Object Id, Name, CPU | Format-TuiGrid
+    .OUTPUTS
+        [string[]] the full framed grid, each line exactly the grid's display
+        width. Empty input returns @().
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Rows,
+
+        [object[]]$Columns,
+
+        [object]$Footer,
+
+        [ValidateSet('Single', 'Double')]
+        [string]$GridStyle = 'Single',
+
+        [switch]$NoHeader,
+
+        [int]$MaxWidth = 0,
+
+        [switch]$Ascii
+    )
+
+    begin {
+        $collected = [System.Collections.Generic.List[object]]::new()
+        $getCell = {
+            param($row, $name)
+            # Tolerate rows / footers that lack a column's property — bare
+            # $row.$name on a missing PSObject member emits a noisy error.
+            $v = if ($row -is [System.Collections.IDictionary]) {
+                $row[$name]
+            } else {
+                $prop = $row.PSObject.Properties[$name]
+                if ($prop) { $prop.Value } else { $null }
+            }
+            if ($null -eq $v) { '' } else { [string]$v }
+        }
+        $isNumeric = {
+            param($s)
+            $ref = 0.0
+            [double]::TryParse($s, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$ref)
+        }
+        $normJustify = {
+            param($j)
+            switch -Regex ([string]$j) {
+                '^(r|right)$'         { 'Right' }
+                '^(c|center|centre)$' { 'Center' }
+                default               { 'Left' }
+            }
+        }
+    }
+
+    process {
+        if ($null -ne $Rows) {
+            foreach ($r in $Rows) { if ($null -ne $r) { $collected.Add($r) } }
+        }
+    }
+
+    end {
+        if ($collected.Count -eq 0 -and -not $Columns) { return @() }
+
+        $asciiOn = if ($PSBoundParameters.ContainsKey('Ascii')) { [bool]$Ascii } else { $script:_AsciiMode }
+        $g = Get-TuiGridGlyphs $asciiOn $GridStyle
+
+        # Normalize the column spec (same model as Format-TuiTable; Justify left
+        # $null here means "auto" and is resolved against the data below).
+        $cols = [System.Collections.Generic.List[hashtable]]::new()
+        if ($Columns) {
+            foreach ($c in $Columns) {
+                if ($c -is [System.Collections.IDictionary]) {
+                    $name = if ($null -ne $c['Name']) { [string]$c['Name'] } else { [string]$c['Header'] }
+                    $cols.Add(@{
+                        Name    = $name
+                        Header  = if ($null -ne $c['Header']) { [string]$c['Header'] } else { $name }
+                        Width   = if ($null -ne $c['Width']) { [int]$c['Width'] } else { 0 }
+                        Justify = if ($c['Justify']) { & $normJustify $c['Justify'] } else { $null }
+                    })
+                } else {
+                    $name = [string]$c
+                    $cols.Add(@{ Name = $name; Header = $name; Width = 0; Justify = $null })
+                }
+            }
+        } else {
+            $first = $collected[0]
+            $names = if ($first -is [System.Collections.IDictionary]) { @($first.Keys) } else { @($first.PSObject.Properties.Name) }
+            foreach ($n in $names) { $cols.Add(@{ Name = [string]$n; Header = [string]$n; Width = 0; Justify = $null }) }
+        }
+
+        # Auto-justify: a column whose every non-empty cell parses as a number
+        # is right-justified; everything else left. Explicit Justify wins.
+        foreach ($col in $cols) {
+            if (-not $col.Justify) {
+                $vals = @(foreach ($row in $collected) {
+                    $cell = & $getCell $row $col.Name
+                    if ($cell -ne '') { $cell }
+                })
+                $allNum = ($vals.Count -gt 0) -and -not ($vals | Where-Object { -not (& $isNumeric $_) })
+                $col.Justify = if ($allNum) { 'Right' } else { 'Left' }
+            }
+        }
+
+        # Resolve widths: a fixed Width wins; otherwise the widest of the header,
+        # every cell, and the footer cell.
+        $footerCells = @{}
+        $hasFooter = $null -ne $Footer
+        foreach ($col in $cols) {
+            if ($hasFooter) { $footerCells[$col.Name] = & $getCell $Footer $col.Name }
+            if ($col.Width -gt 0) { $col.Resolved = $col.Width; continue }
+            $w = if ($NoHeader) { 0 } else { Get-DisplayWidth $col.Header }
+            foreach ($row in $collected) {
+                $cw = Get-DisplayWidth (& $getCell $row $col.Name)
+                if ($cw -gt $w) { $w = $cw }
+            }
+            if ($hasFooter) {
+                $fw = Get-DisplayWidth $footerCells[$col.Name]
+                if ($fw -gt $w) { $w = $fw }
+            }
+            $col.Resolved = [Math]::Max(1, $w)
+        }
+
+        # Fit to width: each column occupies Resolved + 2 cells (a space of
+        # padding each side); the frame adds the outer border and one vertical
+        # per interior boundary. Shrink the widest column until the grid fits.
+        $winWidth = 80
+        try { if ([Console]::WindowWidth -gt 0) { $winWidth = [Console]::WindowWidth } } catch {}
+        $limit = ($MaxWidth -gt 0) ? [Math]::Min($MaxWidth, $winWidth) : $winWidth
+        $overhead = 3 * $cols.Count + 1
+        while ($true) {
+            $sum = 0
+            foreach ($col in $cols) { $sum += $col.Resolved }
+            if (($sum + $overhead) -le $limit) { break }
+            $widest = $null
+            foreach ($col in $cols) { if ($null -eq $widest -or $col.Resolved -gt $widest.Resolved) { $widest = $col } }
+            if ($null -eq $widest -or $widest.Resolved -le 1) { break }
+            $widest.Resolved = $widest.Resolved - 1
+        }
+
+        # --- Assemble the frame ---
+        $frame = [System.Collections.Generic.List[string]]::new()
+
+        $buildRule = {
+            param([string]$pos)   # 'top' | 'mid' | 'bottom'
+            $left  = switch ($pos) { 'top' { $g.TL } 'bottom' { $g.BL } default { $g.TeeL } }
+            $junc  = switch ($pos) { 'top' { $g.TeeT } 'bottom' { $g.TeeB } default { $g.Cross } }
+            $right = switch ($pos) { 'top' { $g.TR } 'bottom' { $g.BR } default { $g.TeeR } }
+            $sb = [System.Text.StringBuilder]::new()
+            [void]$sb.Append($left)
+            for ($i = 0; $i -lt $cols.Count; $i++) {
+                [void]$sb.Append($g.H * ($cols[$i].Resolved + 2))
+                if ($i -lt $cols.Count - 1) { [void]$sb.Append($junc) }
+            }
+            [void]$sb.Append($right)
+            $sb.ToString()
+        }
+
+        $buildRow = {
+            param([hashtable]$cellMap)
+            $sb = [System.Text.StringBuilder]::new()
+            [void]$sb.Append($g.V)
+            foreach ($col in $cols) {
+                $text = if ($cellMap.ContainsKey($col.Name)) { $cellMap[$col.Name] } else { '' }
+                [void]$sb.Append(' ')
+                [void]$sb.Append((Format-TuiColumn -Text $text -Width $col.Resolved -Justify $col.Justify))
+                [void]$sb.Append(' ')
+                [void]$sb.Append($g.V)
+            }
+            $sb.ToString()
+        }
+
+        $frame.Add((& $buildRule 'top'))
+
+        if (-not $NoHeader) {
+            $hdr = @{}
+            foreach ($col in $cols) { $hdr[$col.Name] = $col.Header }
+            $frame.Add((& $buildRow $hdr))
+            $frame.Add((& $buildRule 'mid'))
+        }
+
+        for ($r = 0; $r -lt $collected.Count; $r++) {
+            $cellMap = @{}
+            foreach ($col in $cols) { $cellMap[$col.Name] = & $getCell $collected[$r] $col.Name }
+            $frame.Add((& $buildRow $cellMap))
+            if ($r -lt $collected.Count - 1) { $frame.Add((& $buildRule 'mid')) }
+        }
+
+        if ($hasFooter) {
+            $frame.Add((& $buildRule 'mid'))
+            $frame.Add((& $buildRow $footerCells))
+        }
+
+        $frame.Add((& $buildRule 'bottom'))
+
+        return $frame.ToArray()
+    }
+}
+
 function Write-TuiBox {
     <#
     .SYNOPSIS
@@ -1015,21 +1479,216 @@ function Write-TuiBox {
 
     if ($Border) { $frame.Add("$($g.BorderBL)$horiz$($g.BorderBR)") }
 
-    # Render the frame
-    $currentY = $Y
-    foreach ($line in $frame) {
-        if ($X -ge 0) {
-            if ($currentY -ge 0) {
-                Write-Host "`e[$($currentY);$($X)H" -NoNewline
-                $currentY++
-            } else {
-                Write-Host "`e[$($X)G" -NoNewline
-            }
-        }
-        Write-Host "$line`e[K"
+    # Render the frame via the shared positioning / redraw helper.
+    $count = Write-FrameLines -Frame $frame -X $X -Y $Y
+
+    if ($PassThru) { return $count }
+}
+
+function Write-TuiTable {
+    <#
+    .SYNOPSIS
+        Render tabular data as a framed table (Format-TuiTable + Write-TuiBox).
+    .DESCRIPTION
+        Thin wrapper that lays out $Rows with Format-TuiTable and renders the
+        result through Write-TuiBox. The column-header row is handed to
+        Write-TuiBox as its -Header band, and the data rows become the -Body;
+        under -Border (or -SectionRules) the box then draws the connector rule
+        between the two for free, instead of the table faking its own. Because
+        Format-TuiTable emits rows at a single fixed width, the box frames them
+        without re-truncating.
+
+        For the raw layout strings (e.g. to embed in a larger frame) use
+        Format-TuiTable directly.
+    .PARAMETER Rows
+        Data rows; see Format-TuiTable -Rows. Accepts pipeline input.
+    .PARAMETER Columns
+        Optional column specification; see Format-TuiTable -Columns.
+    .PARAMETER Separator
+        Inter-column separator; see Format-TuiTable -Separator.
+    .PARAMETER Title
+        Optional line(s) drawn in the header band above the column header.
+    .PARAMETER NoHeader
+        Suppress the column-header row; render only data rows in the body.
+    .PARAMETER Border
+        Wrap the table in a Unicode/ASCII box. See Write-TuiBox -Border.
+    .PARAMETER MinWidth
+        Lower bound for inner content width. See Write-TuiBox -MinWidth.
+    .PARAMETER MaxWidth
+        Upper bound for outer width. See Write-TuiBox -MaxWidth.
+    .PARAMETER X
+        Absolute column to render at. -1 = current cursor position.
+    .PARAMETER Y
+        Absolute row to render at. -1 = current cursor position.
+    .PARAMETER SectionRules
+        Draw a rule between the header and body in borderless mode.
+        See Write-TuiBox -SectionRules.
+    .PARAMETER Ascii
+        Use ASCII glyphs throughout. See Write-TuiBox -Ascii.
+    .PARAMETER PassThru
+        Emit the rendered line count. See Write-TuiBox -PassThru.
+    .EXAMPLE
+        PS> Get-Service | Select-Object Name, Status | Write-TuiTable -Border
+    .OUTPUTS
+        None by default, or [int] line count under -PassThru.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Rows,
+
+        [object[]]$Columns,
+        [string]$Separator,
+        [string[]]$Title,
+        [switch]$NoHeader,
+        [switch]$Border,
+        [int]$MinWidth = 0,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$SectionRules,
+        [switch]$Ascii,
+        [switch]$PassThru
+    )
+
+    begin {
+        $collected = [System.Collections.Generic.List[object]]::new()
     }
 
-    if ($PassThru) { return $frame.Count }
+    process {
+        if ($null -ne $Rows) {
+            foreach ($r in $Rows) { if ($null -ne $r) { $collected.Add($r) } }
+        }
+    }
+
+    end {
+        if ($collected.Count -eq 0 -and -not $Columns) { return }
+
+        # Build the rows. No -HeaderRule: the box owns the header/body divider.
+        $ftArgs = @{}
+        if ($Columns) { $ftArgs.Columns = $Columns }
+        if ($PSBoundParameters.ContainsKey('Separator')) { $ftArgs.Separator = $Separator }
+        if ($PSBoundParameters.ContainsKey('Ascii')) { $ftArgs.Ascii = $Ascii }
+        if ($NoHeader) { $ftArgs.NoHeader = $true }
+
+        $rowsOut = @(Format-TuiTable -Rows $collected.ToArray() @ftArgs)
+        if ($rowsOut.Count -eq 0) { return }
+
+        # Split the header row out so the box renders it as its header band.
+        $header = @()
+        $body = $rowsOut
+        if (-not $NoHeader) {
+            $header = @($rowsOut[0])
+            $body = if ($rowsOut.Count -gt 1) { $rowsOut[1..($rowsOut.Count - 1)] } else { @() }
+        }
+        if ($Title) { $header = @($Title) + $header }
+        # Write-TuiBox -Body is Mandatory and must be non-empty.
+        if (@($body).Count -eq 0) { $body = @('') }
+
+        $boxArgs = @{
+            Header       = $header
+            Body         = @($body)
+            Border       = $Border
+            MinWidth     = $MinWidth
+            MaxWidth     = $MaxWidth
+            X            = $X
+            Y            = $Y
+            SectionRules = $SectionRules
+            PassThru     = $PassThru
+        }
+        if ($PSBoundParameters.ContainsKey('Ascii')) { $boxArgs.Ascii = $Ascii }
+
+        Write-TuiBox @boxArgs
+    }
+}
+
+function Write-TuiGrid {
+    <#
+    .SYNOPSIS
+        Render objects as a fully-ruled table grid with crossbar junctions.
+    .DESCRIPTION
+        Lays the rows out with Format-TuiGrid and renders the resulting frame —
+        outer border, header/footer rules, a rule between every data row, and
+        vertical column rules, all joined with proper box-drawing junctions —
+        through the shared frame renderer (so it honours -X / -Y positioning and
+        returns a line count like Write-TuiBox).
+
+        This is the heavyweight, self-drawing counterpart to Write-TuiTable: use
+        Write-TuiTable for a light table framed by Write-TuiBox; use Write-TuiGrid
+        when you want interior gridlines and crossbars. Columns auto-size and
+        numeric columns auto-right-justify; see Format-TuiGrid for the full
+        column / justify / width model.
+    .PARAMETER Rows
+        Data rows; see Format-TuiGrid -Rows. Accepts pipeline input.
+    .PARAMETER Columns
+        Optional column spec; see Format-TuiGrid -Columns.
+    .PARAMETER Footer
+        Optional footer row object; see Format-TuiGrid -Footer.
+    .PARAMETER GridStyle
+        'Single' (default) or 'Double' line family; see Format-TuiGrid -GridStyle.
+    .PARAMETER NoHeader
+        Suppress the header row and its rule.
+    .PARAMETER MaxWidth
+        Upper bound for the outer grid width. 0 = terminal width.
+    .PARAMETER X
+        Absolute column to render at. -1 = current cursor position.
+    .PARAMETER Y
+        Absolute row to render at. -1 = current cursor position.
+    .PARAMETER Ascii
+        Use ASCII glyphs. See Format-TuiGrid -Ascii.
+    .PARAMETER PassThru
+        Emit the rendered line count. Without it the function returns nothing.
+    .EXAMPLE
+        PS> Get-Service | Select-Object Name, Status | Write-TuiGrid -GridStyle Double
+    .OUTPUTS
+        None by default, or [int] line count under -PassThru.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Rows,
+
+        [object[]]$Columns,
+        [object]$Footer,
+        [ValidateSet('Single', 'Double')]
+        [string]$GridStyle = 'Single',
+        [switch]$NoHeader,
+        [int]$MaxWidth = 0,
+        [int]$X = -1,
+        [int]$Y = -1,
+        [switch]$Ascii,
+        [switch]$PassThru
+    )
+
+    begin {
+        $collected = [System.Collections.Generic.List[object]]::new()
+    }
+
+    process {
+        if ($null -ne $Rows) {
+            foreach ($r in $Rows) { if ($null -ne $r) { $collected.Add($r) } }
+        }
+    }
+
+    end {
+        if ($collected.Count -eq 0 -and -not $Columns) { return }
+
+        $fgArgs = @{ GridStyle = $GridStyle; MaxWidth = $MaxWidth }
+        if ($Columns) { $fgArgs.Columns = $Columns }
+        if ($PSBoundParameters.ContainsKey('Footer')) { $fgArgs.Footer = $Footer }
+        if ($NoHeader) { $fgArgs.NoHeader = $true }
+        if ($PSBoundParameters.ContainsKey('Ascii')) { $fgArgs.Ascii = $Ascii }
+
+        $frame = @(Format-TuiGrid -Rows $collected.ToArray() @fgArgs)
+        if ($frame.Count -eq 0) { return }
+
+        $count = Write-FrameLines -Frame $frame -X $X -Y $Y
+        if ($PassThru) { return $count }
+    }
 }
 
 function Get-PaginatedSelection {
@@ -5840,4 +6499,4 @@ function Read-Measurement {
     return ConvertFrom-MeasurementBase -BaseValue ([decimal]$baseResult) -Family $fam -UnitName $OutputUnit
 }
 
-Export-ModuleMember -Function Write-TuiBox, Format-TuiColumn, Format-TuiWrap, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Set-SpinnerActivity, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily
+Export-ModuleMember -Function Write-TuiBox, Write-TuiTable, Write-TuiGrid, Format-TuiColumn, Format-TuiTable, Format-TuiGrid, Format-TuiWrap, Get-PaginatedSelection, Read-MaskedInput, Read-Password, Read-ValidatedInput, Read-Number, Read-Confirmation, Read-Choice, Show-Spinner, Write-Spinner, Set-SpinnerActivity, Invoke-NestedMenu, Measure-FuzzyMatch, Read-Date, Read-Time, Read-Timezone, Read-Phone, Read-Email, Read-IPv4, Read-CIDR, Read-URL, Read-Percentage, Read-Temperature, Read-Currency, Read-Measurement, Get-MeasurementFamily

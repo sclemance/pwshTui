@@ -41,6 +41,7 @@ Menu_SpinnerTimer             = Show-Spinner with -ShowTimer
 Menu_SpinnerStyles            = Show-Spinner — all six styles
 Menu_SpinnerClosure           = Show-Spinner — closure capture
 Menu_UIBox                    = Write-TuiBox (standalone)
+Menu_Table                    = Write-TuiTable (tabular layout)
 
 Title_Demo                    = pwshTui Demo [{0} | {1}]
 Title_SelectSystemObject      = Select a System Object
@@ -49,6 +50,7 @@ Title_PickMultiple            = Pick multiple objects
 Title_AdminPortal             = Admin Portal
 Title_BorderedMenu            = Bordered Menu
 Title_SystemStatus            = System Status
+Title_Services                = Services
 
 Header_Paginated              = Get-PaginatedSelection (searchable)
 Header_PaginatedJump          = Get-PaginatedSelection (-InitialIndex jumps to a specific item)
@@ -70,6 +72,8 @@ Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — all six styles, 1.5s each
 Header_SpinnerClosure         = Show-Spinner — closures Just Work
 Header_UIBox                  = Write-TuiBox (standalone)
+Header_Table                  = Write-TuiTable (tabular layout)
+Hint_Table                    = Auto-sized columns, right-justified numbers, joined by │ separators — Format-TuiTable lays out the rows, Write-TuiBox frames them.
 Header_Date                   = Read-Date (inline)
 Header_DateCalendar           = Read-Date -Calendar (with month grid)
 Header_Time                   = Read-Time (24-hour)

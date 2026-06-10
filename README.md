@@ -27,7 +27,11 @@ This library focuses on fast, flicker-free rendering using ANSI escape sequences
 - [`Read-Measurement`](#read-measurement) - Mixed-unit measurement input driven by `units/<family>.psd1` data files (length, etc.), with live conversion display, built on `Read-Number -BufferParser`
 - [`Invoke-NestedMenu`](#invoke-nestedmenu) - Hierarchical menu for non-paginated, deep-tree navigation
 - [`Write-TuiBox`](#write-tuibox) - The underlying layout engine, also available for standalone use
+- [`Write-TuiTable`](#write-tuitable) - Render tabular data as a framed table (`Format-TuiTable` + `Write-TuiBox`)
+- [`Write-TuiGrid`](#write-tuigrid) - Render objects as a fully-ruled grid with crossbar junctions
 - [`Format-TuiColumn`](#format-tuicolumn) - Display-width-aware justify/pad into a fixed-width cell
+- [`Format-TuiTable`](#format-tuitable) - Lay out objects into fixed-width, display-width-aware table rows
+- [`Format-TuiGrid`](#format-tuigrid) - Lay out objects as a fully-ruled grid (the engine behind `Write-TuiGrid`)
 - [`Format-TuiWrap`](#format-tuiwrap) - Display-width-aware word wrap with optional hanging indent
 - [`Measure-FuzzyMatch`](#measure-fuzzymatch) - Utility for fuzzy relevance scoring (powers paginated search)
 - [`Show-Spinner`](#show-spinner) - Run a scriptblock with a live animated spinner
@@ -717,6 +721,61 @@ Write-TuiBox -Header "System Status" -Body @("CPU: 12%", "RAM: 4.2GB") -Border
 
 ---
 
+### `Write-TuiTable`
+Renders a set of objects as a framed table. A thin wrapper that lays the rows out with [`Format-TuiTable`](#format-tuitable) and renders them through [`Write-TuiBox`](#write-tuibox): the column-header row becomes the box's `-Header` band and the data rows its `-Body`, so under `-Border` the connector rule between the title and the data is drawn for free. Because `Format-TuiTable` emits rows at a single fixed width, the box frames them without re-truncating.
+
+**Parameters:**
+- `-Rows`: `[object[]]` data rows (`[PSCustomObject]`, hashtable/ordered, or any object). Accepts pipeline input.
+- `-Columns`: `[object[]]` optional column spec — see [`Format-TuiTable`](#format-tuitable).
+- `-Separator`: `[string]` inter-column separator (default ` │ `, Ascii-aware).
+- `-Title`: `[string[]]` optional line(s) drawn in the header band above the column header.
+- `-NoHeader`: (Switch) Suppress the column-header row; render only data rows.
+- `-Border` / `-MinWidth` / `-MaxWidth` / `-X` / `-Y` / `-SectionRules` / `-Ascii` / `-PassThru`: passed through to [`Write-TuiBox`](#write-tuibox).
+
+**Example:**
+```powershell
+Get-Service | Select-Object Name, Status | Write-TuiTable -Border -Title "Services"
+```
+
+---
+
+### `Write-TuiGrid`
+Renders objects as a **fully-ruled grid** — an outer border, a rule under the header, a rule between every data row, a rule above the footer, and vertical rules between columns, all joined with proper box-drawing junctions (corners, edge tees `├ ┤ ┬ ┴`, and the interior cross `┼`). This is the heavyweight, self-drawing counterpart to [`Write-TuiTable`](#write-tuitable): use `Write-TuiTable` for a light table framed by [`Write-TuiBox`](#write-tuibox); reach for `Write-TuiGrid` when you want interior gridlines and crossbars. It lays the rows out with [`Format-TuiGrid`](#format-tuigrid) and renders the frame through the same positioning/redraw path as `Write-TuiBox` (so `-X` / `-Y` and `-PassThru` behave identically).
+
+**Features:**
+- Auto-sized columns; columns whose every cell parses as a number are **right-justified by default**.
+- Single or double line family; under ASCII both collapse to `+ - |`.
+- Optional footer row (e.g. a totals line) and fit-to-width column shrinking.
+
+**Parameters:**
+- `-Rows`: `[object[]]` data rows (`[PSCustomObject]`, hashtable/ordered, or any object). Accepts pipeline input.
+- `-Columns`: `[object[]]` optional column spec — see [`Format-TuiGrid`](#format-tuigrid).
+- `-Footer`: `[object]` optional footer row, read by the same column names as the data rows (missing properties render empty).
+- `-GridStyle`: `Single` (default) or `Double` line family.
+- `-NoHeader`: (Switch) Suppress the header row and its rule.
+- `-MaxWidth`: `[int]` upper bound for the outer grid width (`0` = terminal width); the widest columns shrink to fit.
+- `-X` / `-Y`: Absolute coordinates for the top-left corner (`-1` = current cursor position).
+- `-Ascii`: (Switch) Use ASCII glyphs. See [Rendering Modes](#rendering-modes).
+- `-PassThru`: (Switch) Emit the rendered line count.
+
+**Example:**
+```powershell
+Get-Service | Select-Object Name, Status | Write-TuiGrid -GridStyle Double
+```
+```
+╔═════════════╦═════════╦═══════╦══════╗
+║ Service     ║ Status  ║   PID ║  CPU ║
+╠═════════════╬═════════╬═══════╬══════╣
+║ nginx       ║ Running ║  1240 ║  0.4 ║
+╠═════════════╬═════════╬═══════╬══════╣
+║ postgres    ║ Running ║  9982 ║ 12.7 ║
+╚═════════════╩═════════╩═══════╩══════╝
+```
+
+> Per-row / per-column gridline styles and column spans (a header cell spanning several columns) are not supported yet — `Write-TuiGrid` renders a *uniform* grid. For a borderless or box-framed table without interior rules, use [`Write-TuiTable`](#write-tuitable).
+
+---
+
 ### `Format-TuiColumn`
 Justifies and pads a string into a fixed-width display cell — the shared alignment primitive behind `Invoke-NestedMenu`'s value column. Pure function; no host output.
 
@@ -732,6 +791,49 @@ Measured with the same display-width rules as the rest of the module (East-Asian
 ```powershell
 Format-TuiColumn -Text "Theme" -Width 12              # 'Theme       '
 Format-TuiColumn -Text "42"    -Width 6 -Justify Right # '    42'
+```
+
+---
+
+### `Format-TuiTable`
+Lays a set of objects out into a `[string[]]` of table rows — one per record, plus a header row — where each cell is aligned into a fixed column via [`Format-TuiColumn`](#format-tuicolumn) and the columns are joined by a separator. Every returned row measures **exactly** the same number of display cells (sum of column widths plus separators), so the result drops straight into `Write-TuiBox -Body` without the box re-truncating or mis-padding — the same width-agreement discipline the menu layout relies on. Pure function; no host output. See [`Write-TuiTable`](#write-tuitable) for the rendering wrapper.
+
+Columns are auto-sized to the widest cell (and header) they contain, measured with the module's display-width rules (CJK = 2 cells, ANSI = 0). A per-column `Width` pins the column instead, letting `Format-TuiColumn` truncate overlong cells with an ellipsis.
+
+**Parameters:**
+- `-Rows`: `[object[]]` data rows (`[PSCustomObject]`, hashtable/ordered, or any object whose properties hold the cell values). Accepts pipeline input; null rows are skipped.
+- `-Columns`: `[object[]]` optional column spec controlling which columns appear, their order, titles, widths, and justification. Each entry is a property-name string, or a hashtable with keys `Name` (property to read), `Header` (title, default `Name`), `Width` (fixed width; `0`/omitted = auto-size), and `Justify` (`Left`/`Right`/`Center`, applied to cells and header). When omitted, columns are derived from the first row's properties (object property order, or ordered-dictionary key order — pass `-Columns` to pin order for plain hashtables).
+- `-Separator`: `[string]` placed between columns (default ` │ `, a vertical bar fenced by spaces; Ascii-aware). Pass `'  '` for plain spaced columns.
+- `-HeaderRule`: (Switch) Emit a horizontal rule row spanning the full table width immediately after the header (useful when feeding the whole result to `Write-TuiBox -Body`). No-op with `-NoHeader`.
+- `-NoHeader`: (Switch) Suppress the header row; emit only data rows.
+- `-Ascii`: (Switch) Use ASCII glyphs for the default separator and the header rule. See [Rendering Modes](#rendering-modes).
+
+```powershell
+Get-Process | Select-Object Id, Name, CPU | Format-TuiTable -HeaderRule
+
+Format-TuiTable -Rows $svc -Columns @(
+    @{ Name = 'Name';   Width = 20 },
+    @{ Name = 'Status'; Justify = 'Right' })
+```
+
+---
+
+### `Format-TuiGrid`
+The pure engine behind [`Write-TuiGrid`](#write-tuigrid). Returns the **entire framed grid** as a `[string[]]` — borders and content interleaved, since once there are interior horizontal rules the two can't be separated (unlike [`Format-TuiTable`](#format-tuitable), which returns bare content rows). Every line is exactly the grid's display width, measured the module's way (CJK = 2 cells, ANSI = 0). No host output.
+
+**Parameters:**
+- `-Rows`: `[object[]]` data rows; accepts pipeline input, null rows skipped.
+- `-Columns`: `[object[]]` optional spec — each entry is a property-name string or a hashtable with `Name`, `Header`, `Width` (0 = auto), and `Justify`. Justify accepts `Left`/`Right`/`Center` **or** the short forms `l`/`r`/`c`. When omitted, columns are derived from the first row's properties.
+- `-Footer`: `[object]` optional footer row (one object/hashtable read by column name).
+- `-GridStyle`: `Single` (default) or `Double`. Under ASCII both collapse to `+ - |`.
+- `-NoHeader`: (Switch) Render data rows only.
+- `-MaxWidth`: `[int]` outer width cap (`0` = terminal width); the widest columns shrink, with `Format-TuiColumn` truncating overflow.
+- `-Ascii`: (Switch) Use ASCII glyphs (default `$env:PWSHTUI_ASCII`).
+
+Columns auto-size to the widest of their header, cells, and footer; columns whose every non-empty cell parses as a number are right-justified by default. Empty input returns `@()`.
+
+```powershell
+Get-Process | Select-Object Id, Name, CPU | Format-TuiGrid
 ```
 
 ---
@@ -887,12 +989,14 @@ Two cross-cutting rendering switches are available on every function where they 
 | Unicode | ASCII | Used in |
 |---|---|---|
 | `─ ┌ ┐ └ ┘ ├ ┤ │` | `- + + + + + + \|` | `Write-TuiBox` borders + section rules |
+| `┬ ┴ ┼` | `+ + +` | `Write-TuiGrid` interior crossbars (single) |
+| `═ ║ ╔ ╗ ╚ ╝ ╠ ╣ ╦ ╩ ╬` | `- \| + + + + + + + + +` | `Write-TuiGrid -GridStyle Double` (no ASCII double; collapses to single) |
 | `← →` | `<- ->` | footers of paginated selection / nested menu / date / time |
 | `↑↓` | `^v` | footers of paginated selection / nested menu / date / time |
 | `►` | `>` | `Invoke-NestedMenu` child indicator |
 | Braille `⠋⠙⠹...` | `\| / - \\` | `Show-Spinner` — `-Ascii` forces `-Style Ascii` |
 
-Available on: `Write-TuiBox`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-Date`, `Read-Time`, `Read-Timezone`.
+Available on: `Write-TuiBox`, `Write-TuiTable`, `Write-TuiGrid`, `Format-TuiTable`, `Format-TuiGrid`, `Get-PaginatedSelection`, `Invoke-NestedMenu`, `Show-Spinner`, `Read-Date`, `Read-Time`, `Read-Timezone`.
 
 **`-NoColor`** — Disable ANSI color/styling. Visual affordances are preserved via bracket fallbacks:
 

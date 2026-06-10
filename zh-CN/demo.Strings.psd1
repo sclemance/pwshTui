@@ -39,6 +39,7 @@ Menu_SpinnerTimer             = Show-Spinner 带 -ShowTimer
 Menu_SpinnerStyles            = Show-Spinner — 全部六种样式
 Menu_SpinnerClosure           = Show-Spinner — 闭包捕获
 Menu_UIBox                    = Write-TuiBox (独立)
+Menu_Table                    = Write-TuiTable (表格布局)
 
 Title_Demo                    = pwshTui 演示 [{0} | {1}]
 Title_SelectSystemObject      = 选择系统对象
@@ -47,6 +48,7 @@ Title_PickMultiple            = 选择多个对象
 Title_AdminPortal             = 管理门户
 Title_BorderedMenu            = 带边框菜单
 Title_SystemStatus            = 系统状态
+Title_Services                = 服务
 
 Header_Paginated              = Get-PaginatedSelection (可搜索)
 Header_PaginatedJump          = Get-PaginatedSelection (-InitialIndex 跳到指定项)
@@ -68,6 +70,8 @@ Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — 全部六种样式、每种 1.5 秒
 Header_SpinnerClosure         = Show-Spinner — 闭包能直接用
 Header_UIBox                  = Write-TuiBox (独立)
+Header_Table                  = Write-TuiTable (表格布局)
+Hint_Table                    = 自动调整列宽，数字右对齐，以 │ 分隔 — Format-TuiTable 排布行，Write-TuiBox 加框。
 Header_Date                   = Read-Date (内联)
 Header_DateCalendar           = Read-Date -Calendar (带月历)
 Header_Time                   = Read-Time (24 小时)

@@ -38,6 +38,7 @@ Menu_SpinnerTimer             = Show-Spinner -ShowTimer 付き
 Menu_SpinnerStyles            = Show-Spinner — 全 6 スタイル
 Menu_SpinnerClosure           = Show-Spinner — クロージャ捕捉
 Menu_UIBox                    = Write-TuiBox (単独)
+Menu_Table                    = Write-TuiTable (表形式レイアウト)
 
 Title_Demo                    = pwshTui デモ [{0} | {1}]
 Title_SelectSystemObject      = システムオブジェクトを選択
@@ -46,6 +47,7 @@ Title_PickMultiple            = 複数オブジェクトを選択
 Title_AdminPortal             = 管理ポータル
 Title_BorderedMenu            = 枠付きメニュー
 Title_SystemStatus            = システム状態
+Title_Services                = サービス
 
 Header_Paginated              = Get-PaginatedSelection (検索可能)
 Header_PaginatedJump          = Get-PaginatedSelection (-InitialIndex で特定の項目へジャンプ)
@@ -67,6 +69,8 @@ Header_SpinnerTimer           = Show-Spinner -ShowTimer
 Header_SpinnerStyles          = Show-Spinner — 全 6 スタイル、各 1.5 秒
 Header_SpinnerClosure         = Show-Spinner — クロージャは普通に使える
 Header_UIBox                  = Write-TuiBox (単独)
+Header_Table                  = Write-TuiTable (表形式レイアウト)
+Hint_Table                    = 自動サイズ調整された列、右寄せの数値、│ で区切り — Format-TuiTable が行を配置し、Write-TuiBox が枠で囲みます。
 Header_Date                   = Read-Date (インライン)
 Header_DateCalendar           = Read-Date -Calendar (月間グリッド付き)
 Header_Time                   = Read-Time (24時間)
